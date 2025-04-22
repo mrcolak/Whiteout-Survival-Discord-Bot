@@ -139,7 +139,6 @@ class Control(commands.Cog):
                 result = cursor.fetchone()
                 auto_value = result[0] if result else 1
         
-        
         embed = discord.Embed(
             title=f"🏰 {alliance_name} Alliance Control",
             description="🔍 Checking for changes in member status...",
@@ -163,73 +162,121 @@ class Control(commands.Cog):
 
         furnace_changes, nickname_changes, kid_changes = [], [], []
 
-        i = 0
-        while i < total_users:
-            batch_users = users[i:i+20]
-            for fid, old_nickname, old_furnace_lv, old_stove_lv_content, old_kid in batch_users:
-                data = await self.fetch_user_data(fid)
+        # Prepare the list of available proxies for rotation
+        available_proxies = self.proxies.copy() if self.proxies else [None]
+        
+        # Function to process a single user
+        async def process_user(user_data, proxy_to_use):
+            fid, old_nickname, old_furnace_lv, old_stove_lv_content, old_kid = user_data
+            
+            data = await self.fetch_user_data(fid, proxy_to_use)
+            
+            # If we got rate limited and no other proxy is available
+            if data == 429 and len(available_proxies) <= 1:
+                await asyncio.sleep(2)  # Small delay before retry
+                data = await self.fetch_user_data(fid, proxy_to_use)
+            
+            if not isinstance(data, dict):
+                return None
                 
-                if data == 429 and (not os.path.exists('proxy.txt') or not self.proxies):
-                    embed.description = f"⚠️ API Rate Limit! Waiting 60 seconds...\n📊 Progress: {checked_users}/{total_users} members"
-                    embed.color = discord.Color.orange()
-                    if message:
-                        await message.edit(embed=embed)
-                    
-                    await asyncio.sleep(60)
-                    
-                    embed.description = "🔍 Checking for changes in member status..."
-                    embed.color = discord.Color.blue()
-                    if message:
-                        await message.edit(embed=embed)
-                    data = await self.fetch_user_data(fid)
-                
-                if isinstance(data, dict):
-                    user_data = data['data']
-                    new_furnace_lv = user_data['stove_lv']
-                    new_nickname = user_data['nickname'].strip()
-                    new_kid = user_data.get('kid', 0)
-                    new_stove_lv_content = user_data['stove_lv_content']
-                    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            user_info = data['data']
+            new_furnace_lv = user_info['stove_lv']
+            new_nickname = user_info['nickname'].strip()
+            new_kid = user_info.get('kid', 0)
+            new_stove_lv_content = user_info['stove_lv_content']
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            changes = {
+                'fid': fid,
+                'old_nickname': old_nickname, 
+                'new_nickname': new_nickname,
+                'old_furnace_lv': old_furnace_lv,
+                'new_furnace_lv': new_furnace_lv,
+                'old_stove_lv_content': old_stove_lv_content,
+                'new_stove_lv_content': new_stove_lv_content,
+                'old_kid': old_kid,
+                'new_kid': new_kid,
+                'current_time': current_time
+            }
+            
+            return changes
 
+        # Process users in batches concurrently
+        batch_size = 20
+        for i in range(0, total_users, batch_size):
+            batch_users = users[i:i+batch_size]
+            
+            # Distribute users among available proxies
+            tasks = []
+            for j, user in enumerate(batch_users):
+                proxy_index = j % len(available_proxies)
+                proxy_to_use = available_proxies[proxy_index]
+                tasks.append(process_user(user, proxy_to_use))
+            
+            # Run batch processing concurrently
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Process results and update database
+            for result in batch_results:
+                if result and not isinstance(result, Exception):
                     async with self.db_lock:
-                        if new_stove_lv_content != old_stove_lv_content:
-                            self.cursor_users.execute("UPDATE users SET stove_lv_content = ? WHERE fid = ?", (new_stove_lv_content, fid))
+                        # Handle stove_lv_content changes
+                        if result['new_stove_lv_content'] != result['old_stove_lv_content']:
+                            self.cursor_users.execute("UPDATE users SET stove_lv_content = ? WHERE fid = ?", 
+                                                     (result['new_stove_lv_content'], result['fid']))
                             self.conn_users.commit()
-
-                        if old_kid != new_kid:
-                            kid_changes.append(f"👤 **{old_nickname}** has transferred to a new state\n🔄 Old State: `{old_kid}`\n🆕 New State: `{new_kid}`")
-                            self.cursor_users.execute("UPDATE users SET kid = ? WHERE fid = ?", (new_kid, fid))
+                        
+                        # Handle kid changes
+                        if result['old_kid'] != result['new_kid']:
+                            kid_changes.append(
+                                f"👤 **{result['old_nickname']}** has transferred to a new state\n"
+                                f"🔄 Old State: `{result['old_kid']}`\n"
+                                f"🆕 New State: `{result['new_kid']}`")
+                            self.cursor_users.execute("UPDATE users SET kid = ? WHERE fid = ?", 
+                                                     (result['new_kid'], result['fid']))
                             self.conn_users.commit()
-
-                        if new_furnace_lv != old_furnace_lv:
-                            new_furnace_display = level_mapping.get(new_furnace_lv, new_furnace_lv)
-                            old_furnace_display = level_mapping.get(old_furnace_lv, old_furnace_lv)
-                            self.cursor_changes.execute("INSERT INTO furnace_changes (fid, old_furnace_lv, new_furnace_lv, change_date) VALUES (?, ?, ?, ?)",
-                                                         (fid, old_furnace_lv, new_furnace_lv, current_time))
+                        
+                        # Handle furnace level changes
+                        if result['new_furnace_lv'] != result['old_furnace_lv']:
+                            new_furnace_display = level_mapping.get(result['new_furnace_lv'], result['new_furnace_lv'])
+                            old_furnace_display = level_mapping.get(result['old_furnace_lv'], result['old_furnace_lv'])
+                            self.cursor_changes.execute(
+                                "INSERT INTO furnace_changes (fid, old_furnace_lv, new_furnace_lv, change_date) VALUES (?, ?, ?, ?)",
+                                (result['fid'], result['old_furnace_lv'], result['new_furnace_lv'], result['current_time']))
                             self.conn_changes.commit()
-                            self.cursor_users.execute("UPDATE users SET furnace_lv = ? WHERE fid = ?", (new_furnace_lv, fid))
+                            self.cursor_users.execute("UPDATE users SET furnace_lv = ? WHERE fid = ?", 
+                                                     (result['new_furnace_lv'], result['fid']))
                             self.conn_users.commit()
-                            furnace_changes.append(f"👤 **{old_nickname}**\n🔥 `{old_furnace_display}` ➡️ `{new_furnace_display}`")
-
-                        if new_nickname.lower() != old_nickname.lower().strip():
-                            self.cursor_changes.execute("INSERT INTO nickname_changes (fid, old_nickname, new_nickname, change_date) VALUES (?, ?, ?, ?)",
-                                                         (fid, old_nickname, new_nickname, current_time))
+                            furnace_changes.append(
+                                f"👤 **{result['old_nickname']}**\n"
+                                f"🔥 `{old_furnace_display}` ➡️ `{new_furnace_display}`")
+                        
+                        # Handle nickname changes
+                        if result['new_nickname'].lower() != result['old_nickname'].lower().strip():
+                            self.cursor_changes.execute(
+                                "INSERT INTO nickname_changes (fid, old_nickname, new_nickname, change_date) VALUES (?, ?, ?, ?)",
+                                (result['fid'], result['old_nickname'], result['new_nickname'], result['current_time']))
                             self.conn_changes.commit()
-                            self.cursor_users.execute("UPDATE users SET nickname = ? WHERE fid = ?", (new_nickname, fid))
+                            self.cursor_users.execute("UPDATE users SET nickname = ? WHERE fid = ?", 
+                                                     (result['new_nickname'], result['fid']))
                             self.conn_users.commit()
-                            nickname_changes.append(f"📝 `{old_nickname}` ➡️ `{new_nickname}`")
-
-                checked_users += 1
+                            nickname_changes.append(f"📝 `{result['old_nickname']}` ➡️ `{result['new_nickname']}`")
+                    
+                    checked_users += 1
+                    
+                elif isinstance(result, Exception):
+                    print(f"{Fore.RED}[ERROR] Error processing user: {str(result)}{Style.RESET_ALL}")
+                    checked_users += 1
+            
+            # Update progress in embed
+            if message:
                 embed.set_field_at(
                     1,
                     name="📈 Progress",
                     value=f"✨ Members checked: {checked_users}/{total_users}",
                     inline=False
                 )
-                if message:
-                    await message.edit(embed=embed)
-
-            i += 20
+                await message.edit(embed=embed)
 
         end_time = datetime.now()
         duration = end_time - start_time
