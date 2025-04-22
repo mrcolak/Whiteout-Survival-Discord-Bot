@@ -10,8 +10,6 @@ from datetime import datetime
 from colorama import Fore, Style
 import os
 from aiohttp_socks import ProxyConnector
-import random
-from collections import deque
 
 SECRET = 'tB87#kPtkxqOS2'
 
@@ -56,8 +54,6 @@ class Control(commands.Cog):
         
         self.db_lock = asyncio.Lock()
         self.proxies = self.load_proxies()
-        self.proxy_queue = deque(self.proxies) if self.proxies else deque([None])
-        self.max_workers = min(50, len(self.proxies) if self.proxies else 1)
         self.alliance_tasks = {}
         self.is_running = {}
         self.monitor_started = False
@@ -68,83 +64,11 @@ class Control(commands.Cog):
 
     def load_proxies(self):
         proxies = []
-        valid_proxies = []
-        
         if os.path.exists('proxy.txt'):
             with open('proxy.txt', 'r') as f:
-                proxy_lines = [line.strip() for line in f if line.strip()]
-                
-            print(f"{Fore.YELLOW}[INFO] Found {len(proxy_lines)} proxies in proxy.txt, formatting and validating...{Style.RESET_ALL}")
-            
-            for line in proxy_lines:
-                parts = line.split(':')
-                if len(parts) == 4:  # IP:PORT:USERNAME:PASSWORD format
-                    ip, port, username, password = parts
-                    # Format for aiohttp: http://username:password@ip:port
-                    formatted_proxy = f"http://{username}:{password}@{ip}:{port}"
-                    proxies.append(formatted_proxy)
-                elif len(parts) == 2:  # IP:PORT format
-                    ip, port = parts
-                    formatted_proxy = f"http://{ip}:{port}"
-                    proxies.append(formatted_proxy)
-            
-            print(f"{Fore.YELLOW}[INFO] Validating {len(proxies)} formatted proxies...{Style.RESET_ALL}")
-            
-            # Create a synchronous function to check proxies
-            def check_proxy(proxy):
-                try:
-                    import requests
-                    import urllib3
-                    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-                    
-                    # Test URL - using a reliable endpoint
-                    test_url = 'https://www.google.com'
-                    timeout = 10  # 10 seconds timeout for auth proxies
-                    
-                    # Convert aiohttp style proxy to requests style
-                    if '@' in proxy:  # authenticated proxy
-                        auth_part = proxy.split('@')[0].replace('http://', '')
-                        proxy_part = proxy.split('@')[1]
-                        username, password = auth_part.split(':')
-                        proxy_dict = {
-                            'http': f'http://{proxy_part}',
-                            'https': f'http://{proxy_part}'
-                        }
-                        auth = requests.auth.HTTPProxyAuth(username, password)
-                        response = requests.get(test_url, proxies=proxy_dict, auth=auth, timeout=timeout, verify=False)
-                    else:  # non-authenticated proxy
-                        proxy_dict = {'http': proxy, 'https': proxy}
-                        response = requests.get(test_url, proxies=proxy_dict, timeout=timeout, verify=False)
-                    
-                    if response.status_code == 200:
-                        return True
-                except Exception as e:
-                    print(f"{Fore.RED}[PROXY ERROR] {proxy} - {str(e)}{Style.RESET_ALL}")
-                    return False
-                return False
-            
-            # Check each proxy in the list
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-                # Submit all proxy checking tasks and collect futures
-                future_to_proxy = {executor.submit(check_proxy, proxy): proxy for proxy in proxies}
-                
-                # Process results as they complete
-                for future in concurrent.futures.as_completed(future_to_proxy):
-                    proxy = future_to_proxy[future]
-                    try:
-                        is_valid = future.result()
-                        if is_valid:
-                            valid_proxies.append(proxy)
-                            print(f"{Fore.GREEN}[PROXY VALID] {proxy}{Style.RESET_ALL}")
-                        else:
-                            print(f"{Fore.RED}[PROXY INVALID] {proxy}{Style.RESET_ALL}")
-                    except Exception as e:
-                        print(f"{Fore.RED}[PROXY CHECK ERROR] {proxy} - {str(e)}{Style.RESET_ALL}")
-            
-            print(f"{Fore.GREEN}[INFO] Successfully validated {len(valid_proxies)}/{len(proxies)} proxies{Style.RESET_ALL}")
-        
-        return valid_proxies
+                proxies = [f"http://{line.strip()}" for line in f if line.strip()]
+            print(f"{Fore.YELLOW}[INFO] Loaded {len(proxies)} proxies from proxy.txt{Style.RESET_ALL}")
+        return proxies
 
     async def fetch_user_data(self, fid, proxy=None):
         url = 'https://wos-giftcode-api.centurygame.com/api/player'
@@ -155,68 +79,28 @@ class Control(commands.Cog):
         form = f"sign={sign}&{form}"
 
         try:
-            connector = None
-            if proxy:
-                # Handle authenticated proxies properly
-                connector = ProxyConnector.from_url(proxy)
-            
+            connector = ProxyConnector.from_url(proxy) if proxy else None
             async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.post(url, headers=headers, data=form, ssl=False) as response:
                     if response.status == 200:
                         return await response.json()
                     else:
-                        print(f"{Fore.YELLOW}[PROXY WARNING] Proxy {proxy} returned status {response.status}{Style.RESET_ALL}")
                         return response.status
         except Exception as e:
-            print(f"{Fore.RED}[ERROR] Error fetching data with proxy {proxy}: {e}{Style.RESET_ALL}")
+            print(f"{Fore.RED}[ERROR] Error fetching data with proxy: {e}{Style.RESET_ALL}")
             return None
 
-    def get_next_proxy(self):
-        """Get the next proxy from the rotation queue"""
-        if not self.proxy_queue:
-            self.proxy_queue = deque(self.proxies) if self.proxies else deque([None])
-        
-        if self.proxy_queue:
-            proxy = self.proxy_queue.popleft()
-            self.proxy_queue.append(proxy)  # Put it back at the end for rotation
-            return proxy
+    async def process_user(self, fid, old_nickname, old_furnace_lv, old_stove_lv_content, old_kid, proxies):
+        data = await self.fetch_user_data(fid)
+        if data and data != 429:
+            return data
+
+        for proxy in proxies:
+            data = await self.fetch_user_data(fid, proxy=proxy)
+            if data and data != 429:
+                return data
+
         return None
-
-    async def process_user(self, fid, old_nickname, old_furnace_lv, old_stove_lv_content, old_kid):
-        """Process a single user with a single proxy attempt"""
-        proxy = self.get_next_proxy()
-        data = await self.fetch_user_data(fid, proxy=proxy)
-        return data
-
-    async def process_user_batch(self, users_queue, results):
-        """Worker to process users from a queue using available proxies"""
-        while not users_queue.empty():
-            try:
-                user_data = await users_queue.get()
-                fid, old_nickname, old_furnace_lv, old_stove_lv_content, old_kid = user_data
-                
-                data = await self.process_user(fid, old_nickname, old_furnace_lv, old_stove_lv_content, old_kid)
-                
-                # If we got rate limited or error, try a different proxy up to 3 times
-                retry_count = 0
-                while (data == 429 or data is None) and retry_count < 3:
-                    retry_count += 1
-                    await asyncio.sleep(0.5)  # Short delay before retry
-                    data = await self.process_user(fid, old_nickname, old_furnace_lv, old_stove_lv_content, old_kid)
-                
-                results[fid] = {
-                    'data': data,
-                    'old_data': {
-                        'nickname': old_nickname,
-                        'furnace_lv': old_furnace_lv,
-                        'stove_lv_content': old_stove_lv_content,
-                        'kid': old_kid
-                    }
-                }
-                users_queue.task_done()
-            except Exception as e:
-                print(f"{Fore.RED}[ERROR] Error in worker: {str(e)}{Style.RESET_ALL}")
-                users_queue.task_done()
 
     async def check_agslist(self, channel, alliance_id):
         async with self.db_lock:
@@ -266,96 +150,73 @@ class Control(commands.Cog):
 
         furnace_changes, nickname_changes, kid_changes = [], [], []
 
-        # Create a queue for all users
-        users_queue = asyncio.Queue()
-        results = {}  # Store all results
-
-        # Put all users into the queue
-        for user in users:
-            await users_queue.put(user)
-
-        # Determine number of workers - use all available proxies, but don't exceed 50 workers
-        num_workers = min(self.max_workers, total_users)
-        worker_count = max(1, num_workers)  # Ensure at least one worker
-        
-        embed.description = f"🔍 Checking for changes in member status...\n⚙️ Using {worker_count} workers with available proxies"
-        if message:
-            await message.edit(embed=embed)
-        
-        print(f"{Fore.YELLOW}[INFO] Starting {worker_count} worker tasks for {alliance_name}{Style.RESET_ALL}")
-        
-        # Create and start worker tasks
-        workers = []
-        for _ in range(worker_count):
-            worker = asyncio.create_task(self.process_user_batch(users_queue, results))
-            workers.append(worker)
-        
-        # Update progress
-        while not users_queue.empty():
-            checked_users = total_users - users_queue.qsize()
-            embed.set_field_at(
-                1,
-                name="📈 Progress",
-                value=f"✨ Members checked: {checked_users}/{total_users}",
-                inline=False
-            )
-            if message:
-                await message.edit(embed=embed)
-            await asyncio.sleep(2)
-
-        # Wait for all workers to complete
-        await users_queue.join()
-        
-        # Cancel all workers
-        for worker in workers:
-            worker.cancel()
-        
-        # Process all results and update database
-        for fid, result_data in results.items():
-            data = result_data['data']
-            old_data = result_data['old_data']
-            old_nickname = old_data['nickname']
-            old_furnace_lv = old_data['furnace_lv']
-            old_stove_lv_content = old_data['stove_lv_content']
-            old_kid = old_data['kid']
-            
-            if not isinstance(data, dict):
-                continue
+        i = 0
+        while i < total_users:
+            batch_users = users[i:i+20]
+            for fid, old_nickname, old_furnace_lv, old_stove_lv_content, old_kid in batch_users:
+                data = await self.fetch_user_data(fid)
                 
-            user_data = data['data']
-            new_furnace_lv = user_data['stove_lv']
-            new_nickname = user_data['nickname'].strip()
-            new_kid = user_data.get('kid', 0)
-            new_stove_lv_content = user_data['stove_lv_content']
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if data == 429 and (not os.path.exists('proxy.txt') or not self.proxies):
+                    embed.description = f"⚠️ API Rate Limit! Waiting 60 seconds...\n📊 Progress: {checked_users}/{total_users} members"
+                    embed.color = discord.Color.orange()
+                    if message:
+                        await message.edit(embed=embed)
+                    
+                    await asyncio.sleep(60)
+                    
+                    embed.description = "🔍 Checking for changes in member status..."
+                    embed.color = discord.Color.blue()
+                    if message:
+                        await message.edit(embed=embed)
+                    data = await self.fetch_user_data(fid)
+                
+                if isinstance(data, dict):
+                    user_data = data['data']
+                    new_furnace_lv = user_data['stove_lv']
+                    new_nickname = user_data['nickname'].strip()
+                    new_kid = user_data.get('kid', 0)
+                    new_stove_lv_content = user_data['stove_lv_content']
+                    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            async with self.db_lock:
-                if new_stove_lv_content != old_stove_lv_content:
-                    self.cursor_users.execute("UPDATE users SET stove_lv_content = ? WHERE fid = ?", (new_stove_lv_content, fid))
-                    self.conn_users.commit()
+                    async with self.db_lock:
+                        if new_stove_lv_content != old_stove_lv_content:
+                            self.cursor_users.execute("UPDATE users SET stove_lv_content = ? WHERE fid = ?", (new_stove_lv_content, fid))
+                            self.conn_users.commit()
 
-                if old_kid != new_kid:
-                    kid_changes.append(f"👤 **{old_nickname}** has transferred to a new state\n🔄 Old State: `{old_kid}`\n🆕 New State: `{new_kid}`")
-                    self.cursor_users.execute("UPDATE users SET kid = ? WHERE fid = ?", (new_kid, fid))
-                    self.conn_users.commit()
+                        if old_kid != new_kid:
+                            kid_changes.append(f"👤 **{old_nickname}** has transferred to a new state\n🔄 Old State: `{old_kid}`\n🆕 New State: `{new_kid}`")
+                            self.cursor_users.execute("UPDATE users SET kid = ? WHERE fid = ?", (new_kid, fid))
+                            self.conn_users.commit()
 
-                if new_furnace_lv != old_furnace_lv:
-                    new_furnace_display = level_mapping.get(new_furnace_lv, new_furnace_lv)
-                    old_furnace_display = level_mapping.get(old_furnace_lv, old_furnace_lv)
-                    self.cursor_changes.execute("INSERT INTO furnace_changes (fid, old_furnace_lv, new_furnace_lv, change_date) VALUES (?, ?, ?, ?)",
-                                                 (fid, old_furnace_lv, new_furnace_lv, current_time))
-                    self.conn_changes.commit()
-                    self.cursor_users.execute("UPDATE users SET furnace_lv = ? WHERE fid = ?", (new_furnace_lv, fid))
-                    self.conn_users.commit()
-                    furnace_changes.append(f"👤 **{old_nickname}**\n🔥 `{old_furnace_display}` ➡️ `{new_furnace_display}`")
+                        if new_furnace_lv != old_furnace_lv:
+                            new_furnace_display = level_mapping.get(new_furnace_lv, new_furnace_lv)
+                            old_furnace_display = level_mapping.get(old_furnace_lv, old_furnace_lv)
+                            self.cursor_changes.execute("INSERT INTO furnace_changes (fid, old_furnace_lv, new_furnace_lv, change_date) VALUES (?, ?, ?, ?)",
+                                                         (fid, old_furnace_lv, new_furnace_lv, current_time))
+                            self.conn_changes.commit()
+                            self.cursor_users.execute("UPDATE users SET furnace_lv = ? WHERE fid = ?", (new_furnace_lv, fid))
+                            self.conn_users.commit()
+                            furnace_changes.append(f"👤 **{old_nickname}**\n🔥 `{old_furnace_display}` ➡️ `{new_furnace_display}`")
 
-                if new_nickname.lower() != old_nickname.lower().strip():
-                    self.cursor_changes.execute("INSERT INTO nickname_changes (fid, old_nickname, new_nickname, change_date) VALUES (?, ?, ?, ?)",
-                                                 (fid, old_nickname, new_nickname, current_time))
-                    self.conn_changes.commit()
-                    self.cursor_users.execute("UPDATE users SET nickname = ? WHERE fid = ?", (new_nickname, fid))
-                    self.conn_users.commit()
-                    nickname_changes.append(f"📝 `{old_nickname}` ➡️ `{new_nickname}`")
+                        if new_nickname.lower() != old_nickname.lower().strip():
+                            self.cursor_changes.execute("INSERT INTO nickname_changes (fid, old_nickname, new_nickname, change_date) VALUES (?, ?, ?, ?)",
+                                                         (fid, old_nickname, new_nickname, current_time))
+                            self.conn_changes.commit()
+                            self.cursor_users.execute("UPDATE users SET nickname = ? WHERE fid = ?", (new_nickname, fid))
+                            self.conn_users.commit()
+                            nickname_changes.append(f"📝 `{old_nickname}` ➡️ `{new_nickname}`")
+
+                checked_users += 1
+                embed.set_field_at(
+                    1,
+                    name="📈 Progress",
+                    value=f"✨ Members checked: {checked_users}/{total_users}",
+                    inline=False
+                )
+                if message:
+                    await message.edit(embed=embed)
+
+            i += 20
 
         end_time = datetime.now()
         duration = end_time - start_time
