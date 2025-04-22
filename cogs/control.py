@@ -72,29 +72,50 @@ class Control(commands.Cog):
         
         if os.path.exists('proxy.txt'):
             with open('proxy.txt', 'r') as f:
-                proxies = [f"http://{line.strip()}" for line in f if line.strip()]
+                proxy_lines = [line.strip() for line in f if line.strip()]
+                
+            print(f"{Fore.YELLOW}[INFO] Found {len(proxy_lines)} proxies in proxy.txt, formatting and validating...{Style.RESET_ALL}")
             
-            print(f"{Fore.YELLOW}[INFO] Found {len(proxies)} proxies in proxy.txt, validating...{Style.RESET_ALL}")
+            for line in proxy_lines:
+                parts = line.split(':')
+                if len(parts) == 4:  # IP:PORT:USERNAME:PASSWORD format
+                    ip, port, username, password = parts
+                    # Format for aiohttp: http://username:password@ip:port
+                    formatted_proxy = f"http://{username}:{password}@{ip}:{port}"
+                    proxies.append(formatted_proxy)
+                elif len(parts) == 2:  # IP:PORT format
+                    ip, port = parts
+                    formatted_proxy = f"http://{ip}:{port}"
+                    proxies.append(formatted_proxy)
+            
+            print(f"{Fore.YELLOW}[INFO] Validating {len(proxies)} formatted proxies...{Style.RESET_ALL}")
             
             # Create a synchronous function to check proxies
             def check_proxy(proxy):
                 try:
-                    from aiohttp_socks import ProxyConnector
                     import requests
                     import urllib3
                     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
                     
                     # Test URL - using a reliable endpoint
                     test_url = 'https://www.google.com'
-                    timeout = 5  # 5 seconds timeout
+                    timeout = 10  # 10 seconds timeout for auth proxies
                     
                     # Convert aiohttp style proxy to requests style
-                    if proxy.startswith('http://'):
-                        requests_proxy = {'http': proxy, 'https': proxy}
-                    else:
-                        requests_proxy = {'http': proxy, 'https': proxy}
+                    if '@' in proxy:  # authenticated proxy
+                        auth_part = proxy.split('@')[0].replace('http://', '')
+                        proxy_part = proxy.split('@')[1]
+                        username, password = auth_part.split(':')
+                        proxy_dict = {
+                            'http': f'http://{proxy_part}',
+                            'https': f'http://{proxy_part}'
+                        }
+                        auth = requests.auth.HTTPProxyAuth(username, password)
+                        response = requests.get(test_url, proxies=proxy_dict, auth=auth, timeout=timeout, verify=False)
+                    else:  # non-authenticated proxy
+                        proxy_dict = {'http': proxy, 'https': proxy}
+                        response = requests.get(test_url, proxies=proxy_dict, timeout=timeout, verify=False)
                     
-                    response = requests.get(test_url, proxies=requests_proxy, timeout=timeout, verify=False)
                     if response.status_code == 200:
                         return True
                 except Exception as e:
@@ -134,15 +155,20 @@ class Control(commands.Cog):
         form = f"sign={sign}&{form}"
 
         try:
-            connector = ProxyConnector.from_url(proxy) if proxy else None   
+            connector = None
+            if proxy:
+                # Handle authenticated proxies properly
+                connector = ProxyConnector.from_url(proxy)
+            
             async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.post(url, headers=headers, data=form, ssl=False) as response:
                     if response.status == 200:
                         return await response.json()
                     else:
+                        print(f"{Fore.YELLOW}[PROXY WARNING] Proxy {proxy} returned status {response.status}{Style.RESET_ALL}")
                         return response.status
         except Exception as e:
-            print(f"{Fore.RED}[ERROR] Error fetching data with proxy: {e}{Style.RESET_ALL}")
+            print(f"{Fore.RED}[ERROR] Error fetching data with proxy {proxy}: {e}{Style.RESET_ALL}")
             return None
 
     def get_next_proxy(self):
