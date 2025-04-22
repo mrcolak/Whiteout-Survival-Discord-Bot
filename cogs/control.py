@@ -66,7 +66,7 @@ class Control(commands.Cog):
         proxies = []
         if os.path.exists('proxy.txt'):
             with open('proxy.txt', 'r') as f:
-                proxies = [f"socks4://{line.strip()}" for line in f if line.strip()]
+                proxies = [f"http://{line.strip()}" for line in f if line.strip()]
         return proxies
 
     async def fetch_user_data(self, fid, proxy=None):
