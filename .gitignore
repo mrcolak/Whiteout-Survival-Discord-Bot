@@ -5,3 +5,4 @@ script.log
 giftcode_logs/*
 db/*
 log/*
+cogs/__pycache__/*

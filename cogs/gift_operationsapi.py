@@ -8,6 +8,8 @@ from datetime import datetime
 import traceback
 import discord
 import ssl
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
 
 class GiftCodeAPI:
     def __init__(self, bot):
@@ -127,6 +129,13 @@ class GiftCodeAPI:
                                         new_codes.append((code, formatted_date))
                                     except Exception as e:
                                         traceback.print_exc()
+
+                            facebook_codes = self.get_facebook_giftcodes()
+                            for code in facebook_codes:
+                                if code not in db_codes:
+                                    self.cursor.execute("INSERT OR IGNORE INTO gift_codes (giftcode, date) VALUES (?, ?)", (code, datetime.now().strftime("%Y-%m-%d")))
+                                    new_codes.append((code, datetime.now().strftime("%Y-%m-%d")))
+
 
                             try:
                                 self.conn.commit()
@@ -312,3 +321,22 @@ class GiftCodeAPI:
                     
         except Exception as e:
             traceback.print_exc() 
+
+    def get_facebook_giftcodes(self):
+        try:
+            options = Options()
+            options.add_argument('--headless')
+            options.add_argument('--no-sandbox')
+            options.add_argument('--disable-dev-shm-usage')
+            driver = webdriver.Chrome(options=options)
+
+            driver.get("https://www.facebook.com/WhiteoutSurvival")
+            import time; time.sleep(3)
+            html = driver.page_source
+            driver.quit()
+
+            codes = list (set(re.findall(r'Gift code:\s*([A-Z0-9]+)', html)))
+            return codes
+        except Exception as e:
+            traceback.print_exc()
+            return []
