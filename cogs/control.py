@@ -90,18 +90,6 @@ class Control(commands.Cog):
             print(f"{Fore.RED}[ERROR] Error fetching data with proxy: {e}{Style.RESET_ALL}")
             return None
 
-    async def process_user(self, fid, old_nickname, old_furnace_lv, old_stove_lv_content, old_kid, proxies):
-        data = await self.fetch_user_data(fid)
-        if data and data != 429:
-            return data
-
-        for proxy in proxies:
-            data = await self.fetch_user_data(fid, proxy=proxy)
-            if data and data != 429:
-                return data
-
-        return None
-
     async def check_agslist(self, channel, alliance_id):
         async with self.db_lock:
             self.cursor_users.execute("SELECT fid, nickname, furnace_lv, stove_lv_content, kid FROM users WHERE alliance = ?", (alliance_id,))
