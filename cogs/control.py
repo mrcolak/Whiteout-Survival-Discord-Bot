@@ -68,11 +68,62 @@ class Control(commands.Cog):
 
     def load_proxies(self):
         proxies = []
+        valid_proxies = []
+        
         if os.path.exists('proxy.txt'):
             with open('proxy.txt', 'r') as f:
                 proxies = [f"http://{line.strip()}" for line in f if line.strip()]
-            print(f"{Fore.YELLOW}[INFO] Loaded {len(proxies)} proxies from proxy.txt{Style.RESET_ALL}")
-        return proxies
+            
+            print(f"{Fore.YELLOW}[INFO] Found {len(proxies)} proxies in proxy.txt, validating...{Style.RESET_ALL}")
+            
+            # Create a synchronous function to check proxies
+            def check_proxy(proxy):
+                try:
+                    from aiohttp_socks import ProxyConnector
+                    import requests
+                    import urllib3
+                    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                    
+                    # Test URL - using a reliable endpoint
+                    test_url = 'https://www.google.com'
+                    timeout = 5  # 5 seconds timeout
+                    
+                    # Convert aiohttp style proxy to requests style
+                    if proxy.startswith('http://'):
+                        requests_proxy = {'http': proxy, 'https': proxy}
+                    else:
+                        requests_proxy = {'http': proxy, 'https': proxy}
+                    
+                    response = requests.get(test_url, proxies=requests_proxy, timeout=timeout, verify=False)
+                    if response.status_code == 200:
+                        return True
+                except Exception as e:
+                    print(f"{Fore.RED}[PROXY ERROR] {proxy} - {str(e)}{Style.RESET_ALL}")
+                    return False
+                return False
+            
+            # Check each proxy in the list
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                # Submit all proxy checking tasks and collect futures
+                future_to_proxy = {executor.submit(check_proxy, proxy): proxy for proxy in proxies}
+                
+                # Process results as they complete
+                for future in concurrent.futures.as_completed(future_to_proxy):
+                    proxy = future_to_proxy[future]
+                    try:
+                        is_valid = future.result()
+                        if is_valid:
+                            valid_proxies.append(proxy)
+                            print(f"{Fore.GREEN}[PROXY VALID] {proxy}{Style.RESET_ALL}")
+                        else:
+                            print(f"{Fore.RED}[PROXY INVALID] {proxy}{Style.RESET_ALL}")
+                    except Exception as e:
+                        print(f"{Fore.RED}[PROXY CHECK ERROR] {proxy} - {str(e)}{Style.RESET_ALL}")
+            
+            print(f"{Fore.GREEN}[INFO] Successfully validated {len(valid_proxies)}/{len(proxies)} proxies{Style.RESET_ALL}")
+        
+        return valid_proxies
 
     async def fetch_user_data(self, fid, proxy=None):
         url = 'https://wos-giftcode-api.centurygame.com/api/player'
