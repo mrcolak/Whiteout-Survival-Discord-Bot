@@ -86,6 +86,7 @@ class Control(commands.Cog):
                     else:
                         return response.status
         except Exception as e:
+            print(f"{Fore.RED}[ERROR] Error fetching data with proxy: {e}{Style.RESET_ALL}")
             return None
 
     async def process_user(self, fid, old_nickname, old_furnace_lv, old_stove_lv_content, old_kid, proxies):
