@@ -2,5 +2,6 @@ bot_token.txt
 proxy.no.txt
 proxy.txt
 script.log
+giftcode_logs/*
 db/*
 log/*
