@@ -67,6 +67,7 @@ class Control(commands.Cog):
         if os.path.exists('proxy.txt'):
             with open('proxy.txt', 'r') as f:
                 proxies = [f"http://{line.strip()}" for line in f if line.strip()]
+            print(f"{Fore.YELLOW}[INFO] Loaded {len(proxies)} proxies from proxy.txt{Style.RESET_ALL}")
         return proxies
 
     async def fetch_user_data(self, fid, proxy=None):
