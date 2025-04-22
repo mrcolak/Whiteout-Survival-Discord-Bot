@@ -53,7 +53,7 @@ class Control(commands.Cog):
         self.conn_settings.commit()
         
         self.db_lock = asyncio.Lock()
-        self.proxies = self.load_proxies()
+        self.proxies = []
         self.alliance_tasks = {}
         self.is_running = {}
         self.monitor_started = False
@@ -62,12 +62,37 @@ class Control(commands.Cog):
         self.control_lock = asyncio.Lock()
         self.current_control = None
 
-    def load_proxies(self):
+    async def load_proxies(self):
         proxies = []
         if os.path.exists('proxy.txt'):
             with open('proxy.txt', 'r') as f:
                 proxies = [f"http://{line.strip()}" for line in f if line.strip()]
-            print(f"{Fore.YELLOW}[INFO] Loaded {len(proxies)} proxies from proxy.txt{Style.RESET_ALL}")
+            
+            valid_proxies = []
+            async def check_proxy(proxy):
+                try:
+                    connector = ProxyConnector.from_url(proxy)
+                    async with aiohttp.ClientSession(connector=connector) as session:
+                        async with session.get('https://google.com', timeout=5) as response:
+                            if response.status == 200:
+                                print(f"{Fore.GREEN}[INFO] Proxy {proxy} is valid{Style.RESET_ALL}")
+                                return proxy
+                            else:
+                                print(f"{Fore.RED}[ERROR] Proxy {proxy} is invalid{Style.RESET_ALL}")
+                                return None
+                except Exception as e:
+                    print(f"{Fore.RED}[ERROR] Proxy {proxy} is invalid: {e}{Style.RESET_ALL}")
+                    return None
+            
+            # Check all proxies concurrently
+            tasks = [check_proxy(proxy) for proxy in proxies]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Filter valid proxies
+            valid_proxies = [proxy for proxy in results if proxy and not isinstance(proxy, Exception)]
+            
+            print(f"{Fore.YELLOW}[INFO] Loaded {len(valid_proxies)} valid proxies out of {len(proxies)} from proxy.txt{Style.RESET_ALL}")
+            return valid_proxies
         return proxies
 
     async def fetch_user_data(self, fid, proxy=None):
@@ -383,6 +408,7 @@ class Control(commands.Cog):
     async def on_ready(self):
         if not self.monitor_started:
             print("[CONTROL] Starting monitor and queue processor...")
+            self.proxies = await self.load_proxies()
             self._queue_processor_task = asyncio.create_task(self.process_control_queue())
             self.monitor_alliance_changes.start()
             await self.start_alliance_checks()
