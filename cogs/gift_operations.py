@@ -308,27 +308,7 @@ class GiftOperations(commands.Cog):
 
     async def claim_giftcode_rewards_wos(self, player_id, giftcode):
         try:
-            log_file_path = os.path.join(self.log_directory, 'giftlog.txt')
-            
-            if player_id != "244886619":
-                self.cursor.execute("""
-                    SELECT status FROM user_giftcodes 
-                    WHERE fid = ? AND giftcode = ?
-                """, (player_id, giftcode))
-                
-                existing_record = self.cursor.fetchone()
-                if existing_record:
-                    with open(log_file_path, 'a', encoding='utf-8') as log_file:
-                        log_file.write(f"CACHE HIT - User {player_id} already processed with status: {existing_record[0]}\n")
-                    return existing_record[0]
-
             session, response_stove_info = await self.get_stove_info_wos(player_id=player_id)
-            
-            with open(log_file_path, 'a', encoding='utf-8') as log_file:
-                log_file.write(f"\nAPI REQUEST - Player Info\n")
-                log_file.write(f"Player ID: {player_id}\n")
-                log_file.write(f"Response: {json.dumps(response_stove_info.json(), indent=2)}\n")
-                log_file.write("-" * 50 + "\n")
             
             if response_stove_info.json().get("msg") == "success":
                 data_to_encode = {
@@ -344,13 +324,6 @@ class GiftOperations(commands.Cog):
                 )
                 
                 response_json = response_giftcode.json()
-                
-                with open(log_file_path, 'a', encoding='utf-8') as log_file:
-                    log_file.write(f"\nAPI REQUEST - Gift Code\n")
-                    log_file.write(f"Player ID: {player_id}\n")
-                    log_file.write(f"Gift Code: {giftcode}\n")
-                    log_file.write(f"Response: {json.dumps(response_json, indent=2)}\n")
-                    log_file.write("-" * 50 + "\n")
                 
                 if response_json.get("msg") == "TIME ERROR." and response_json.get("err_code") == 40007:
                     status = "TIME_ERROR"
@@ -371,26 +344,25 @@ class GiftOperations(commands.Cog):
 
                 if player_id != "244886619" and status in ["SUCCESS", "RECEIVED", "SAME TYPE EXCHANGE"]:
                     try:
-                        self.cursor.execute("""
-                            INSERT OR REPLACE INTO user_giftcodes (fid, giftcode, status)
-                            VALUES (?, ?, ?)
-                        """, (player_id, giftcode, status))
-                        self.conn.commit()
-                        with open(log_file_path, 'a', encoding='utf-8') as log_file:
-                            log_file.write(f"DATABASE - Updated: User {player_id}, Code {giftcode}, Status {status}\n")
+                        with sqlite3.connect('db/users.sqlite') as users_db:
+                            cursor = users_db.cursor()
+                            cursor.execute("""
+                                INSERT OR REPLACE INTO user_giftcodes (fid, giftcode, status)
+                                VALUES (?, ?, ?)
+                            """, (player_id, giftcode, status))
+                            users_db.commit()
+                        print(f"DATABASE - Updated: User {player_id}, Code {giftcode}, Status {status}\n")
                     except Exception as e:
-                        with open(log_file_path, 'a', encoding='utf-8') as log_file:
-                            log_file.write(f"DATABASE ERROR: {str(e)}\n")
-                            log_file.write(f"STACK TRACE: {traceback.format_exc()}\n")
+                        print(f"DATABASE ERROR: {str(e)}\n")
+                        print(f"STACK TRACE: {traceback.format_exc()}\n")
 
                 return status
 
             return "ERROR"
 
         except Exception as e:
-            with open(log_file_path, 'a', encoding='utf-8') as log_file:
-                log_file.write(f"ERROR in claim_giftcode_rewards_wos: {str(e)}\n")
-                log_file.write(f"STACK TRACE: {traceback.format_exc()}\n")
+            print(f"ERROR in claim_giftcode_rewards_wos: {str(e)}\n")
+            print(f"STACK TRACE: {traceback.format_exc()}\n")
             return "ERROR"
 
     @tasks.loop(seconds=300)
