@@ -63,7 +63,7 @@ if __name__ == "__main__":
     import asyncio
     import pkg_resources
 
-    VERSION_URL = "https://raw.githubusercontent.com/Reloisback/Whiteout-Survival-Discord-Bot/refs/heads/main/autoupdateinfo.txt"
+    VERSION_URL = "https://raw.githubusercontent.com/mrcolak/Whiteout-Survival-Discord-Bot/refs/heads/main/autoupdateinfo.txt"
 
     def restart_bot():
         print(Fore.YELLOW + "\nRestarting bot..." + Style.RESET_ALL)
@@ -89,20 +89,13 @@ if __name__ == "__main__":
             try:
                 response = requests.get(VERSION_URL)
                 if response.status_code == 200:
-                    source_url = "https://raw.githubusercontent.com/Reloisback/Whiteout-Survival-Discord-Bot/refs/heads/main"
+                    source_url = "https://raw.githubusercontent.com/mrcolak/Whiteout-Survival-Discord-Bot/refs/heads/main"
                     print(Fore.GREEN + "Connected to GitHub successfully." + Style.RESET_ALL)
                 else:
                     raise requests.RequestException
             except requests.RequestException:
-                print(Fore.YELLOW + "Cannot connect to GitHub, trying alternative source (wosland.com)..." + Style.RESET_ALL)
-                alt_version_url = "https://wosland.com/wosdc/autoupdateinfo.txt"
-                response = requests.get(alt_version_url)
-                if response.status_code == 200:
-                    source_url = "https://wosland.com/wosdc"
-                    print(Fore.GREEN + "Connected to wosland.com successfully." + Style.RESET_ALL)
-                else:
-                    print(Fore.RED + "Failed to connect to both GitHub and wosland.com" + Style.RESET_ALL)
-                    return False
+                print(Fore.YELLOW + "Cannot connect to GitHub..." + Style.RESET_ALL)
+                return False
 
             if not os.path.exists('cogs'):
                 os.makedirs('cogs')
