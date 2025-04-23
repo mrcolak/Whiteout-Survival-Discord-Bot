@@ -91,6 +91,18 @@ class Control(commands.Cog):
             print(f"{Fore.RED}[ERROR] Error fetching data with proxy: {e}{Style.RESET_ALL}")
             return None
 
+    async def process_user(self, fid, old_nickname, old_furnace_lv, old_stove_lv_content, old_kid, proxies):
+        data = await self.fetch_user_data(fid)
+        if data and data != 429:
+            return data
+
+        for proxy in proxies:
+            data = await self.fetch_user_data(fid, proxy=proxy)
+            if data and data != 429:
+                return data
+
+        return None
+
     async def check_agslist(self, channel, alliance_id):
         async with self.db_lock:
             self.cursor_users.execute("SELECT fid, nickname, furnace_lv, stove_lv_content, kid FROM users WHERE alliance = ?", (alliance_id,))
@@ -143,7 +155,7 @@ class Control(commands.Cog):
         while i < total_users:
             batch_users = users[i:i+20]
             for fid, old_nickname, old_furnace_lv, old_stove_lv_content, old_kid in batch_users:
-                data = await self.fetch_user_data(fid)
+                data = await self.process_user(self, fid, old_nickname, old_furnace_lv, old_stove_lv_content, old_kid, self.proxies)
                 
                 if data == 429 and (not os.path.exists('proxy.txt') or not self.proxies):
                     embed.description = f"⚠️ API Rate Limit! Waiting 60 seconds...\n📊 Progress: {checked_users}/{total_users} members"
