@@ -297,7 +297,7 @@ class GiftOperations(commands.Cog):
             "time": f"{int(datetime.now().timestamp())}",
         }
         data = self.encode_data(data_to_encode)
-
+    
         response_stove_info = session.post(
             self.wos_player_info_url,
             headers=headers,
@@ -1691,8 +1691,6 @@ class GiftOperations(commands.Cog):
                 
                 # Create async tasks for each member in the batch
                 async def process_member(member):
-                    nonlocal success, received, failed, processed
-                    
                     player_id = member[0]
                     try:
                         with sqlite3.connect('db/users.sqlite') as users_db:
@@ -1701,58 +1699,77 @@ class GiftOperations(commands.Cog):
                             nickname = cursor.fetchone()[0]
 
                         if player_id in previous_users:
-                            already_used_users.append(nickname)
-                            return
+                            return {
+                                "status": "already_used",
+                                "player_id": player_id,
+                                "nickname": nickname
+                            }
 
                         response_status = await self.claim_giftcode_rewards_wos(player_id, giftcode)
                         
                         with open(log_file_path, 'a', encoding='utf-8') as log_file:
                             log_file.write(f"{nickname} - {response_status}\n")
 
-                        if response_status == "SUCCESS":
-                            success += 1
-                            processed += 1
-                            successful_users.append(nickname)
-                            try:
-                                self.cursor.execute("""
-                                    INSERT INTO user_giftcodes (fid, giftcode, status)
-                                    VALUES (?, ?, ?)
-                                """, (player_id, giftcode, response_status))
-                                self.conn.commit()
-                            except sqlite3.IntegrityError:
-                                pass
-                        elif response_status in ["RECEIVED", "SAME TYPE EXCHANGE"]:
-                            received += 1
-                            processed += 1
-                            already_used_users.append(nickname)
-                            try:
-                                self.cursor.execute("""
-                                    INSERT INTO user_giftcodes (fid, giftcode, status)
-                                    VALUES (?, ?, ?)
-                                """, (player_id, giftcode, response_status))
-                                self.conn.commit()
-                            except sqlite3.IntegrityError:
-                                pass
-                        elif response_status == "TIMEOUT_RETRY":
-                            timeout_retry_users.append((player_id, nickname))
-                        else:
-                            failed += 1
-                            processed += 1
-                            failed_users.append(nickname)
-
+                        return {
+                            "status": response_status,
+                            "player_id": player_id,
+                            "nickname": nickname
+                        }
                     except Exception as e:
                         print(f"Error processing member {player_id}: {str(e)}")
                         with open(log_file_path, 'a', encoding='utf-8') as log_file:
                             log_file.write(f"Error with {player_id}: {str(e)}\n")
-                        failed += 1
-                        processed += 1
-                        failed_users.append(f"Unknown ({player_id})")
+                        return {
+                            "status": "error",
+                            "player_id": player_id,
+                            "nickname": f"Unknown ({player_id})",
+                            "error": str(e)
+                        }
                 
                 # Create tasks for batch processing
                 batch_tasks = [process_member(member) for member in batch_members]
                 
                 # Wait for all tasks in this batch to complete
-                await asyncio.gather(*batch_tasks)
+                batch_results = await asyncio.gather(*batch_tasks)
+                
+                # Process the results
+                for result in batch_results:
+                    if result["status"] == "already_used":
+                        already_used_users.append(result["nickname"])
+                    elif result["status"] == "SUCCESS":
+                        success += 1
+                        processed += 1
+                        successful_users.append(result["nickname"])
+                        try:
+                            self.cursor.execute("""
+                                INSERT INTO user_giftcodes (fid, giftcode, status)
+                                VALUES (?, ?, ?)
+                            """, (result["player_id"], giftcode, result["status"]))
+                            self.conn.commit()
+                        except sqlite3.IntegrityError:
+                            pass
+                    elif result["status"] in ["RECEIVED", "SAME TYPE EXCHANGE"]:
+                        received += 1
+                        processed += 1
+                        already_used_users.append(result["nickname"])
+                        try:
+                            self.cursor.execute("""
+                                INSERT INTO user_giftcodes (fid, giftcode, status)
+                                VALUES (?, ?, ?)
+                            """, (result["player_id"], giftcode, result["status"]))
+                            self.conn.commit()
+                        except sqlite3.IntegrityError:
+                            pass
+                    elif result["status"] == "TIMEOUT_RETRY":
+                        timeout_retry_users.append((result["player_id"], result["nickname"]))
+                    elif result["status"] == "error":
+                        failed += 1
+                        processed += 1
+                        failed_users.append(result["nickname"])
+                    else:
+                        failed += 1
+                        processed += 1
+                        failed_users.append(result["nickname"])
                 
                 # Update progress embed after each batch
                 embed.description = (
