@@ -37,7 +37,8 @@ class Control(commands.Cog):
         self.cursor_alliance = self.conn_alliance.cursor()
         self.cursor_users = self.conn_users.cursor()
         self.cursor_changes = self.conn_changes.cursor()
-        
+
+        self.proxies = self.load_proxies()
         self.conn_settings = sqlite3.connect('db/settings.sqlite')
         self.cursor_settings = self.conn_settings.cursor()
         self.cursor_settings.execute("""
@@ -62,7 +63,7 @@ class Control(commands.Cog):
         self.control_lock = asyncio.Lock()
         self.current_control = None
 
-    async def load_proxies(self):
+    def load_proxies(self):
         proxies = []
         if os.path.exists('proxy.txt'):
             with open('proxy.txt', 'r') as f:
@@ -384,7 +385,6 @@ class Control(commands.Cog):
     async def on_ready(self):
         if not self.monitor_started:
             print("[CONTROL] Starting monitor and queue processor...")
-            self.proxies = await self.load_proxies()
             self._queue_processor_task = asyncio.create_task(self.process_control_queue())
             self.monitor_alliance_changes.start()
             await self.start_alliance_checks()
