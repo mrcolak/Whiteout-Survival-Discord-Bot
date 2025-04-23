@@ -66,7 +66,7 @@ class Control(commands.Cog):
         proxies = []
         if os.path.exists('proxy.txt'):
             with open('proxy.txt', 'r') as f:
-                proxies = [f"http://{line.strip()}" for line in f if line.strip()]
+                proxies = [f"socks5://{line.strip()}" for line in f if line.strip()]
             
             valid_proxies = []
             async def check_proxy(proxy):
