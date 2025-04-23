@@ -15,6 +15,8 @@ from .alliance import PaginatedChannelView
 import os
 import traceback
 from .gift_operationsapi import GiftCodeAPI
+from colorama import Fore, Style
+import random
 
 class GiftOperations(commands.Cog):
     def __init__(self, bot):
@@ -56,6 +58,7 @@ class GiftOperations(commands.Cog):
         self.wos_giftcode_redemption_url = "https://wos-giftcode.centurygame.com"
         self.wos_encrypt_key = "tB87#kPtkxqOS2"
         
+        self.proxies = self.load_proxies()
         self.retry_config = Retry(
             total=20,
             backoff_factor=1,
@@ -74,6 +77,15 @@ class GiftOperations(commands.Cog):
         self.log_directory = 'log'
         if not os.path.exists(self.log_directory):
             os.makedirs(self.log_directory)
+
+    def load_proxies(self):
+        proxies = []
+        if os.path.exists('proxy.txt'):
+            with open('proxy.txt', 'r') as f:
+                proxies = [f"socks5://{line.strip()}" for line in f if line.strip()]
+            
+            print(f"{Fore.YELLOW}[INFO] Loaded {len(proxies)} proxies from proxy.txt{Style.RESET_ALL}")
+        return proxies
             
     @commands.Cog.listener()
     async def on_ready(self):
@@ -263,9 +275,16 @@ class GiftOperations(commands.Cog):
         sign = hashlib.md5(f"{encoded_data}{secret}".encode()).hexdigest()
         return {"sign": sign, **data}
 
-    def get_stove_info_wos(self, player_id):
+    def get_stove_info_wos(self, player_id, proxy=None):
         session = requests.Session()
         session.mount("https://", HTTPAdapter(max_retries=self.retry_config))
+
+        if proxy:
+            session.proxies = {"http": proxy, "https": proxy}
+        elif self.proxies:
+            # Use a random proxy if available
+            proxy = random.choice(self.proxies)
+            session.proxies = {"http": proxy, "https": proxy}
 
         headers = {
             "accept": "application/json, text/plain, */*",
@@ -1663,80 +1682,95 @@ class GiftOperations(commands.Cog):
 
             timeout_retry_users = []
             
-            for member in members:
-                operation_counter += 1
-                if operation_counter % 10 == 0:
-                    await asyncio.sleep(0)
+            # Process members in batches asynchronously
+            batch_size = 20
+            i = 0
+            
+            while i < len(members):
+                batch_members = members[i:i+batch_size]
                 
-                player_id = member[0]
-                try:
-                    with sqlite3.connect('db/users.sqlite') as users_db:
-                        cursor = users_db.cursor()
-                        cursor.execute("SELECT nickname FROM users WHERE fid = ?", (player_id,))
-                        nickname = cursor.fetchone()[0]
-
-                    if player_id in previous_users:
-                        already_used_users.append(nickname)
-                        continue
-
-                    response_status = await self.claim_giftcode_rewards_wos(player_id, giftcode)
+                # Create async tasks for each member in the batch
+                async def process_member(member):
+                    nonlocal success, received, failed, processed
                     
-                    with open(log_file_path, 'a', encoding='utf-8') as log_file:
-                        log_file.write(f"{nickname} - {response_status}\n")
+                    player_id = member[0]
+                    try:
+                        with sqlite3.connect('db/users.sqlite') as users_db:
+                            cursor = users_db.cursor()
+                            cursor.execute("SELECT nickname FROM users WHERE fid = ?", (player_id,))
+                            nickname = cursor.fetchone()[0]
 
-                    if response_status == "SUCCESS":
-                        success += 1
-                        processed += 1
-                        successful_users.append(nickname)
-                        try:
-                            self.cursor.execute("""
-                                INSERT INTO user_giftcodes (fid, giftcode, status)
-                                VALUES (?, ?, ?)
-                            """, (player_id, giftcode, response_status))
-                            self.conn.commit()
-                        except sqlite3.IntegrityError:
-                            pass
-                    elif response_status in ["RECEIVED", "SAME TYPE EXCHANGE"]:
-                        received += 1
-                        processed += 1
-                        already_used_users.append(nickname)
-                        try:
-                            self.cursor.execute("""
-                                INSERT INTO user_giftcodes (fid, giftcode, status)
-                                VALUES (?, ?, ?)
-                            """, (player_id, giftcode, response_status))
-                            self.conn.commit()
-                        except sqlite3.IntegrityError:
-                            pass
-                    elif response_status == "TIMEOUT_RETRY":
-                        timeout_retry_users.append((player_id, nickname))
-                    else:
+                        if player_id in previous_users:
+                            already_used_users.append(nickname)
+                            return
+
+                        response_status = await self.claim_giftcode_rewards_wos(player_id, giftcode)
+                        
+                        with open(log_file_path, 'a', encoding='utf-8') as log_file:
+                            log_file.write(f"{nickname} - {response_status}\n")
+
+                        if response_status == "SUCCESS":
+                            success += 1
+                            processed += 1
+                            successful_users.append(nickname)
+                            try:
+                                self.cursor.execute("""
+                                    INSERT INTO user_giftcodes (fid, giftcode, status)
+                                    VALUES (?, ?, ?)
+                                """, (player_id, giftcode, response_status))
+                                self.conn.commit()
+                            except sqlite3.IntegrityError:
+                                pass
+                        elif response_status in ["RECEIVED", "SAME TYPE EXCHANGE"]:
+                            received += 1
+                            processed += 1
+                            already_used_users.append(nickname)
+                            try:
+                                self.cursor.execute("""
+                                    INSERT INTO user_giftcodes (fid, giftcode, status)
+                                    VALUES (?, ?, ?)
+                                """, (player_id, giftcode, response_status))
+                                self.conn.commit()
+                            except sqlite3.IntegrityError:
+                                pass
+                        elif response_status == "TIMEOUT_RETRY":
+                            timeout_retry_users.append((player_id, nickname))
+                        else:
+                            failed += 1
+                            processed += 1
+                            failed_users.append(nickname)
+
+                    except Exception as e:
+                        print(f"Error processing member {player_id}: {str(e)}")
+                        with open(log_file_path, 'a', encoding='utf-8') as log_file:
+                            log_file.write(f"Error with {player_id}: {str(e)}\n")
                         failed += 1
                         processed += 1
-                        failed_users.append(nickname)
-
-                    embed.description = (
-                        f"**Processing Gift Code**\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"🏰 **Alliance:** `{alliance_name}`\n"
-                        f"🎁 **Gift Code:** `{giftcode}`\n"
-                        f"👥 **Total Members:** `{total_members}`\n"
-                        f"✅ **Success:** `{success}`\n"
-                        f"⚠️ **Already Used:** `{received}`\n"
-                        f"❌ **Failed:** `{failed}`\n"
-                        f"⏳ **Progress:** `{processed}/{total_members}`\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                    )
-                    await status_message.edit(embed=embed)
-
-                except Exception as e:
-                    print(f"Error processing member {player_id}: {str(e)}")
-                    with open(log_file_path, 'a', encoding='utf-8') as log_file:
-                        log_file.write(f"{nickname} - ERROR: {str(e)}\n")
-                    failed += 1
-                    processed += 1
-                    failed_users.append(nickname)
-                    await status_message.edit(embed=embed)
+                        failed_users.append(f"Unknown ({player_id})")
+                
+                # Create tasks for batch processing
+                batch_tasks = [process_member(member) for member in batch_members]
+                
+                # Wait for all tasks in this batch to complete
+                await asyncio.gather(*batch_tasks)
+                
+                # Update progress embed after each batch
+                embed.description = (
+                    f"**Processing Gift Code**\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🏰 **Alliance:** `{alliance_name}`\n"
+                    f"🎁 **Gift Code:** `{giftcode}`\n"
+                    f"👥 **Total Members:** `{total_members}`\n"
+                    f"✅ **Success:** `{success}`\n"
+                    f"⚠️ **Already Used:** `{received}`\n"
+                    f"❌ **Failed:** `{failed}`\n"
+                    f"⏳ **Progress:** `{processed}/{total_members}`\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                )
+                await status_message.edit(embed=embed)
+                
+                # Move to the next batch
+                i += batch_size
 
             await asyncio.sleep(0)
 
@@ -2397,4 +2431,4 @@ class GiftView(discord.ui.View):
             pass
 
 async def setup(bot):
-    await bot.add_cog(GiftOperations(bot)) 
+    await bot.add_cog(GiftOperations(bot))

@@ -394,7 +394,6 @@ class Control(commands.Cog):
                     
         except Exception as e:
             print(f"[ERROR] Fatal error in schedule_alliance_check for alliance {alliance_id}: {e}")
-            traceback.print_exc()
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -448,7 +447,6 @@ class Control(commands.Cog):
 
         except Exception as e:
             print(f"[ERROR] Error in start_alliance_checks: {e}")
-            traceback.print_exc()
 
     async def cog_load(self):
         try:
