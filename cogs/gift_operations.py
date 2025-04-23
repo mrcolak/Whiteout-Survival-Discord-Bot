@@ -1675,16 +1675,16 @@ class GiftOperations(commands.Cog):
                 for result in batch_results:
                     # Write to log file outside the async function
 
-                    if player_id != "244886619" and result["status"] in ["SUCCESS", "RECEIVED", "SAME TYPE EXCHANGE"]:
+                    if result['player_id'] != "244886619" and result["status"] in ["SUCCESS", "RECEIVED", "SAME TYPE EXCHANGE"]:
                         try:
                             with sqlite3.connect('db/giftcode.sqlite') as users_db:
                                 cursor = users_db.cursor()
                                 cursor.execute("""
                                     INSERT OR REPLACE INTO user_giftcodes (fid, giftcode, status)
                                     VALUES (?, ?, ?)
-                                """, (player_id, giftcode, result["status"]))
+                                """, (result['player_id'], giftcode, result["status"]))
                                 users_db.commit()
-                            print(f"DATABASE - Updated: User {player_id}, Code {giftcode}, Status {result["status"]}\n")
+                            print(f"DATABASE - Updated: User {result['player_id']}, Code {giftcode}, Status {result["status"]}\n")
                         except Exception as e:
                             print(f"DATABASE ERROR: {str(e)}\n")
                             print(f"STACK TRACE: {traceback.format_exc()}\n")
