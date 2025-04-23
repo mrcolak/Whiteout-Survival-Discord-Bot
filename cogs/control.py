@@ -38,7 +38,6 @@ class Control(commands.Cog):
         self.cursor_users = self.conn_users.cursor()
         self.cursor_changes = self.conn_changes.cursor()
 
-        self.proxies = self.load_proxies()
         self.conn_settings = sqlite3.connect('db/settings.sqlite')
         self.cursor_settings = self.conn_settings.cursor()
         self.cursor_settings.execute("""
@@ -54,7 +53,7 @@ class Control(commands.Cog):
         self.conn_settings.commit()
         
         self.db_lock = asyncio.Lock()
-        self.proxies = []
+        self.proxies = self.load_proxies()
         self.alliance_tasks = {}
         self.is_running = {}
         self.monitor_started = False
