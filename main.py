@@ -14,6 +14,7 @@ def check_and_install_requirements():
         'python-dotenv': 'python-dotenv',
         'aiohttp-socks': 'aiohttp-socks',
         'pytz': 'pytz',
+        'aiosqlite': 'aiosqlite',
         'pyzipper': 'pyzipper',
         'selenium': 'selenium'
     }

@@ -6,3 +6,4 @@ giftcode_logs/*
 db/*
 log/*
 cogs/__pycache__/*
+cogs/gift_test.py
