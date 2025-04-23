@@ -106,7 +106,8 @@ class Control(commands.Cog):
         furnace_changes, nickname_changes, kid_changes = [], [], []
 
         data = await self.fetch_user_data_process(fid, proxies)
-            
+        print(f"{Fore.YELLOW}[INFO] Processing user {fid} - {data}{Style.RESET_ALL}")
+        
         if isinstance(data, dict):
             user_data = data['data']
             new_furnace_lv = user_data['stove_lv']
