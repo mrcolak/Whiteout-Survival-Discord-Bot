@@ -342,20 +342,6 @@ class GiftOperations(commands.Cog):
                 else:
                     status = "ERROR"
 
-                if player_id != "244886619" and status in ["SUCCESS", "RECEIVED", "SAME TYPE EXCHANGE"]:
-                    try:
-                        with sqlite3.connect('db/giftcode.sqlite') as users_db:
-                            cursor = users_db.cursor()
-                            cursor.execute("""
-                                INSERT OR REPLACE INTO user_giftcodes (fid, giftcode, status)
-                                VALUES (?, ?, ?)
-                            """, (player_id, giftcode, status))
-                            users_db.commit()
-                        print(f"DATABASE - Updated: User {player_id}, Code {giftcode}, Status {status}\n")
-                    except Exception as e:
-                        print(f"DATABASE ERROR: {str(e)}\n")
-                        print(f"STACK TRACE: {traceback.format_exc()}\n")
-
                 return status
 
             return "ERROR"
@@ -1531,34 +1517,23 @@ class GiftOperations(commands.Cog):
             ephemeral=True
         )
 
-    async def process_member(self, member, giftcode, previous_users):
+    async def process_member(self, member, giftcode):
         player_id = member[0]
+        nickname = member[1]
         try:
-            with sqlite3.connect('db/users.sqlite') as users_db:
-                cursor = users_db.cursor()
-                cursor.execute("SELECT nickname FROM users WHERE fid = ?", (player_id,))
-                nickname = cursor.fetchone()[0]
-
-            if player_id in previous_users:
-                return {
-                    "status": "already_used",
-                    "player_id": player_id,
-                    "nickname": nickname
-                }
-
             response_status = await self.claim_giftcode_rewards_wos(player_id, giftcode)
             
             return {
                 "status": response_status,
+                "nickname": nickname,
                 "player_id": player_id,
-                "nickname": nickname
             }
         except Exception as e:
             print(f"Error processing member {player_id}: {str(e)}")
             return {
                 "status": "error",
                 "player_id": player_id,
-                "nickname": f"Unknown ({player_id})",
+                "nickname": nickname,
                 "error": str(e)
             }
 
@@ -1618,7 +1593,7 @@ class GiftOperations(commands.Cog):
             users_cursor = users_conn.cursor()
 
             users_cursor.execute(
-                "SELECT fid FROM users WHERE alliance = ?",
+                "SELECT fid, nickname FROM users WHERE alliance = ?",
                 (str(alliance_id),)
             )
             members = users_cursor.fetchall()
@@ -1686,15 +1661,12 @@ class GiftOperations(commands.Cog):
 
             timeout_retry_users = []
             
-            # Process members in batches asynchronously
-            batch_size = 20
             i = 0
-            
             while i < len(members):
-                batch_members = members[i:i+batch_size]
+                batch_members = members[i:i+20]
                 
                 # Create tasks for batch processing
-                batch_tasks = [self.process_member(member, giftcode, previous_users) for member in batch_members]
+                batch_tasks = [self.process_member(member, giftcode) for member in batch_members]
                 
                 # Wait for all tasks in this batch to complete
                 batch_results = await asyncio.gather(*batch_tasks)
@@ -1702,6 +1674,21 @@ class GiftOperations(commands.Cog):
                 # Process the results
                 for result in batch_results:
                     # Write to log file outside the async function
+
+                    if player_id != "244886619" and result["status"] in ["SUCCESS", "RECEIVED", "SAME TYPE EXCHANGE"]:
+                        try:
+                            with sqlite3.connect('db/giftcode.sqlite') as users_db:
+                                cursor = users_db.cursor()
+                                cursor.execute("""
+                                    INSERT OR REPLACE INTO user_giftcodes (fid, giftcode, status)
+                                    VALUES (?, ?, ?)
+                                """, (player_id, giftcode, result["status"]))
+                                users_db.commit()
+                            print(f"DATABASE - Updated: User {player_id}, Code {giftcode}, Status {result["status"]}\n")
+                        except Exception as e:
+                            print(f"DATABASE ERROR: {str(e)}\n")
+                            print(f"STACK TRACE: {traceback.format_exc()}\n")
+
                     with open(log_file_path, 'a', encoding='utf-8') as log_file:
                         if result["status"] == "error":
                             log_file.write(f"Error with {result['player_id']}: {result.get('error', 'Unknown error')}\n")
