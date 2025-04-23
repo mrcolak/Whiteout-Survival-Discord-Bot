@@ -344,7 +344,7 @@ class GiftOperations(commands.Cog):
 
                 if player_id != "244886619" and status in ["SUCCESS", "RECEIVED", "SAME TYPE EXCHANGE"]:
                     try:
-                        with sqlite3.connect('db/users.sqlite') as users_db:
+                        with sqlite3.connect('db/giftcode.sqlite') as users_db:
                             cursor = users_db.cursor()
                             cursor.execute("""
                                 INSERT OR REPLACE INTO user_giftcodes (fid, giftcode, status)
