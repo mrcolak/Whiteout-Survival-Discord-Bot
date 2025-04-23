@@ -68,31 +68,7 @@ class Control(commands.Cog):
             with open('proxy.txt', 'r') as f:
                 proxies = [f"socks5://{line.strip()}" for line in f if line.strip()]
             
-            valid_proxies = []
-            async def check_proxy(proxy):
-                try:
-                    connector = ProxyConnector.from_url(proxy)
-                    async with aiohttp.ClientSession(connector=connector) as session:
-                        async with session.get('https://google.com', timeout=5) as response:
-                            if response.status == 200:
-                                print(f"{Fore.GREEN}[INFO] Proxy {proxy} is valid{Style.RESET_ALL}")
-                                return proxy
-                            else:
-                                print(f"{Fore.RED}[ERROR] Proxy {proxy} is invalid{Style.RESET_ALL}")
-                                return None
-                except Exception as e:
-                    print(f"{Fore.RED}[ERROR] Proxy {proxy} is invalid: {e}{Style.RESET_ALL}")
-                    return None
-            
-            # Check all proxies concurrently
-            tasks = [check_proxy(proxy) for proxy in proxies]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # Filter valid proxies
-            valid_proxies = [proxy for proxy in results if proxy and not isinstance(proxy, Exception)]
-            
-            print(f"{Fore.YELLOW}[INFO] Loaded {len(valid_proxies)} valid proxies out of {len(proxies)} from proxy.txt{Style.RESET_ALL}")
-            return valid_proxies
+            print(f"{Fore.YELLOW}[INFO] Loaded {len(proxies)} proxies from proxy.txt{Style.RESET_ALL}")
         return proxies
 
     async def fetch_user_data(self, fid, proxy=None):
