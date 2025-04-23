@@ -2,7 +2,6 @@ import discord
 from discord.ext import commands
 import requests
 from requests.adapters import HTTPAdapter
-from requests.packages.urllib3.util.retry import Retry
 import hashlib
 import json
 from datetime import datetime
@@ -10,6 +9,8 @@ import sqlite3
 from discord.ext import tasks
 import asyncio
 import re
+
+from urllib3 import Retry
 from .alliance_member_operations import AllianceSelectView
 from .alliance import PaginatedChannelView
 import os
