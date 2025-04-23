@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 import requests
 from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
 import hashlib
 import json
 from datetime import datetime
@@ -9,8 +10,6 @@ import sqlite3
 from discord.ext import tasks
 import asyncio
 import re
-
-from urllib3 import Retry
 from .alliance_member_operations import AllianceSelectView
 from .alliance import PaginatedChannelView
 import os
@@ -276,7 +275,7 @@ class GiftOperations(commands.Cog):
         sign = hashlib.md5(f"{encoded_data}{secret}".encode()).hexdigest()
         return {"sign": sign, **data}
 
-    async def get_stove_info_wos(self, player_id, proxy=None):
+    def get_stove_info_wos(self, player_id, proxy=None):
         session = requests.Session()
         session.mount("https://", HTTPAdapter(max_retries=self.retry_config))
 
@@ -298,7 +297,7 @@ class GiftOperations(commands.Cog):
             "time": f"{int(datetime.now().timestamp())}",
         }
         data = self.encode_data(data_to_encode)
-    
+
         response_stove_info = session.post(
             self.wos_player_info_url,
             headers=headers,
@@ -308,7 +307,27 @@ class GiftOperations(commands.Cog):
 
     async def claim_giftcode_rewards_wos(self, player_id, giftcode):
         try:
-            session, response_stove_info = await self.get_stove_info_wos(player_id=player_id)
+            log_file_path = os.path.join(self.log_directory, 'giftlog.txt')
+            
+            if player_id != "244886619":
+                self.cursor.execute("""
+                    SELECT status FROM user_giftcodes 
+                    WHERE fid = ? AND giftcode = ?
+                """, (player_id, giftcode))
+                
+                existing_record = self.cursor.fetchone()
+                if existing_record:
+                    with open(log_file_path, 'a', encoding='utf-8') as log_file:
+                        log_file.write(f"CACHE HIT - User {player_id} already processed with status: {existing_record[0]}\n")
+                    return existing_record[0]
+
+            session, response_stove_info = self.get_stove_info_wos(player_id=player_id)
+            
+            with open(log_file_path, 'a', encoding='utf-8') as log_file:
+                log_file.write(f"\nAPI REQUEST - Player Info\n")
+                log_file.write(f"Player ID: {player_id}\n")
+                log_file.write(f"Response: {json.dumps(response_stove_info.json(), indent=2)}\n")
+                log_file.write("-" * 50 + "\n")
             
             if response_stove_info.json().get("msg") == "success":
                 data_to_encode = {
@@ -324,6 +343,13 @@ class GiftOperations(commands.Cog):
                 )
                 
                 response_json = response_giftcode.json()
+                
+                with open(log_file_path, 'a', encoding='utf-8') as log_file:
+                    log_file.write(f"\nAPI REQUEST - Gift Code\n")
+                    log_file.write(f"Player ID: {player_id}\n")
+                    log_file.write(f"Gift Code: {giftcode}\n")
+                    log_file.write(f"Response: {json.dumps(response_json, indent=2)}\n")
+                    log_file.write("-" * 50 + "\n")
                 
                 if response_json.get("msg") == "TIME ERROR." and response_json.get("err_code") == 40007:
                     status = "TIME_ERROR"
@@ -342,13 +368,28 @@ class GiftOperations(commands.Cog):
                 else:
                     status = "ERROR"
 
+                if player_id != "244886619" and status in ["SUCCESS", "RECEIVED", "SAME TYPE EXCHANGE"]:
+                    try:
+                        self.cursor.execute("""
+                            INSERT OR REPLACE INTO user_giftcodes (fid, giftcode, status)
+                            VALUES (?, ?, ?)
+                        """, (player_id, giftcode, status))
+                        self.conn.commit()
+                        with open(log_file_path, 'a', encoding='utf-8') as log_file:
+                            log_file.write(f"DATABASE - Updated: User {player_id}, Code {giftcode}, Status {status}\n")
+                    except Exception as e:
+                        with open(log_file_path, 'a', encoding='utf-8') as log_file:
+                            log_file.write(f"DATABASE ERROR: {str(e)}\n")
+                            log_file.write(f"STACK TRACE: {traceback.format_exc()}\n")
+
                 return status
 
             return "ERROR"
 
         except Exception as e:
-            print(f"ERROR in claim_giftcode_rewards_wos: {str(e)}\n")
-            print(f"STACK TRACE: {traceback.format_exc()}\n")
+            with open(log_file_path, 'a', encoding='utf-8') as log_file:
+                log_file.write(f"ERROR in claim_giftcode_rewards_wos: {str(e)}\n")
+                log_file.write(f"STACK TRACE: {traceback.format_exc()}\n")
             return "ERROR"
 
     @tasks.loop(seconds=300)
@@ -1517,26 +1558,6 @@ class GiftOperations(commands.Cog):
             ephemeral=True
         )
 
-    async def process_member(self, member, giftcode):
-        player_id = member[0]
-        nickname = member[1]
-        try:
-            response_status = await self.claim_giftcode_rewards_wos(player_id, giftcode)
-            
-            return {
-                "status": response_status,
-                "nickname": nickname,
-                "player_id": player_id,
-            }
-        except Exception as e:
-            print(f"Error processing member {player_id}: {str(e)}")
-            return {
-                "status": "error",
-                "player_id": player_id,
-                "nickname": nickname,
-                "error": str(e)
-            }
-
     async def use_giftcode_for_alliance(self, alliance_id, giftcode):
         try:
             operation_counter = 0
@@ -1593,7 +1614,7 @@ class GiftOperations(commands.Cog):
             users_cursor = users_conn.cursor()
 
             users_cursor.execute(
-                "SELECT fid, nickname FROM users WHERE alliance = ?",
+                "SELECT fid FROM users WHERE alliance = ?",
                 (str(alliance_id),)
             )
             members = users_cursor.fetchall()
@@ -1661,94 +1682,80 @@ class GiftOperations(commands.Cog):
 
             timeout_retry_users = []
             
-            i = 0
-            while i < len(members):
-                batch_members = members[i:i+20]
+            for member in members:
+                operation_counter += 1
+                if operation_counter % 10 == 0:
+                    await asyncio.sleep(0)
                 
-                # Create tasks for batch processing
-                batch_tasks = [self.process_member(member, giftcode) for member in batch_members]
-                
-                # Wait for all tasks in this batch to complete
-                batch_results = await asyncio.gather(*batch_tasks)
-                
-                # Process the results
-                for result in batch_results:
-                    # Write to log file outside the async function
+                player_id = member[0]
+                try:
+                    with sqlite3.connect('db/users.sqlite') as users_db:
+                        cursor = users_db.cursor()
+                        cursor.execute("SELECT nickname FROM users WHERE fid = ?", (player_id,))
+                        nickname = cursor.fetchone()[0]
 
-                    if result['player_id'] != "244886619" and result["status"] in ["SUCCESS", "RECEIVED", "SAME TYPE EXCHANGE"]:
-                        try:
-                            with sqlite3.connect('db/giftcode.sqlite') as users_db:
-                                cursor = users_db.cursor()
-                                cursor.execute("""
-                                    INSERT OR REPLACE INTO user_giftcodes (fid, giftcode, status)
-                                    VALUES (?, ?, ?)
-                                """, (result['player_id'], giftcode, result["status"]))
-                                users_db.commit()
-                            print(f"DATABASE - Updated: User {result['player_id']}, Code {giftcode}, Status {result["status"]}\n")
-                        except Exception as e:
-                            print(f"DATABASE ERROR: {str(e)}\n")
-                            print(f"STACK TRACE: {traceback.format_exc()}\n")
+                    if player_id in previous_users:
+                        already_used_users.append(nickname)
+                        continue
 
+                    response_status = await self.claim_giftcode_rewards_wos(player_id, giftcode)
+                    
                     with open(log_file_path, 'a', encoding='utf-8') as log_file:
-                        if result["status"] == "error":
-                            log_file.write(f"Error with {result['player_id']}: {result.get('error', 'Unknown error')}\n")
-                        else:
-                            log_file.write(f"{result['nickname']} - {result['status']}\n")
-                            
-                    if result["status"] == "already_used":
-                        already_used_users.append(result["nickname"])
-                    elif result["status"] == "SUCCESS":
+                        log_file.write(f"{nickname} - {response_status}\n")
+
+                    if response_status == "SUCCESS":
                         success += 1
                         processed += 1
-                        successful_users.append(result["nickname"])
+                        successful_users.append(nickname)
                         try:
                             self.cursor.execute("""
                                 INSERT INTO user_giftcodes (fid, giftcode, status)
                                 VALUES (?, ?, ?)
-                            """, (result["player_id"], giftcode, result["status"]))
+                            """, (player_id, giftcode, response_status))
                             self.conn.commit()
                         except sqlite3.IntegrityError:
                             pass
-                    elif result["status"] in ["RECEIVED", "SAME TYPE EXCHANGE"]:
+                    elif response_status in ["RECEIVED", "SAME TYPE EXCHANGE"]:
                         received += 1
                         processed += 1
-                        already_used_users.append(result["nickname"])
+                        already_used_users.append(nickname)
                         try:
                             self.cursor.execute("""
                                 INSERT INTO user_giftcodes (fid, giftcode, status)
                                 VALUES (?, ?, ?)
-                            """, (result["player_id"], giftcode, result["status"]))
+                            """, (player_id, giftcode, response_status))
                             self.conn.commit()
                         except sqlite3.IntegrityError:
                             pass
-                    elif result["status"] == "TIMEOUT_RETRY":
-                        timeout_retry_users.append((result["player_id"], result["nickname"]))
-                    elif result["status"] == "error":
-                        failed += 1
-                        processed += 1
-                        failed_users.append(result["nickname"])
+                    elif response_status == "TIMEOUT_RETRY":
+                        timeout_retry_users.append((player_id, nickname))
                     else:
                         failed += 1
                         processed += 1
-                        failed_users.append(result["nickname"])
-                
-                # Update progress embed after each batch
-                embed.description = (
-                    f"**Processing Gift Code**\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"🏰 **Alliance:** `{alliance_name}`\n"
-                    f"🎁 **Gift Code:** `{giftcode}`\n"
-                    f"👥 **Total Members:** `{total_members}`\n"
-                    f"✅ **Success:** `{success}`\n"
-                    f"⚠️ **Already Used:** `{received}`\n"
-                    f"❌ **Failed:** `{failed}`\n"
-                    f"⏳ **Progress:** `{processed}/{total_members}`\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                )
-                await status_message.edit(embed=embed)
-                
-                # Move to the next batch
-                i += batch_size
+                        failed_users.append(nickname)
+
+                    embed.description = (
+                        f"**Processing Gift Code**\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🏰 **Alliance:** `{alliance_name}`\n"
+                        f"🎁 **Gift Code:** `{giftcode}`\n"
+                        f"👥 **Total Members:** `{total_members}`\n"
+                        f"✅ **Success:** `{success}`\n"
+                        f"⚠️ **Already Used:** `{received}`\n"
+                        f"❌ **Failed:** `{failed}`\n"
+                        f"⏳ **Progress:** `{processed}/{total_members}`\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    )
+                    await status_message.edit(embed=embed)
+
+                except Exception as e:
+                    print(f"Error processing member {player_id}: {str(e)}")
+                    with open(log_file_path, 'a', encoding='utf-8') as log_file:
+                        log_file.write(f"{nickname} - ERROR: {str(e)}\n")
+                    failed += 1
+                    processed += 1
+                    failed_users.append(nickname)
+                    await status_message.edit(embed=embed)
 
             await asyncio.sleep(0)
 
