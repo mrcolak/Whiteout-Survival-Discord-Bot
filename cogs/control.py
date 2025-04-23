@@ -155,7 +155,7 @@ class Control(commands.Cog):
         while i < total_users:
             batch_users = users[i:i+20]
             for fid, old_nickname, old_furnace_lv, old_stove_lv_content, old_kid in batch_users:
-                data = await self.process_user(self, fid, old_nickname, old_furnace_lv, old_stove_lv_content, old_kid, self.proxies)
+                data = await self.process_user(fid, old_nickname, old_furnace_lv, old_stove_lv_content, old_kid, self.proxies)
                 
                 if data == 429 and (not os.path.exists('proxy.txt') or not self.proxies):
                     embed.description = f"⚠️ API Rate Limit! Waiting 60 seconds...\n📊 Progress: {checked_users}/{total_users} members"
