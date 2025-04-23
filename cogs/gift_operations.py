@@ -307,6 +307,8 @@ class GiftOperations(commands.Cog):
 
     async def claim_giftcode_rewards_wos(self, player_id, giftcode):
         try:
+            log_file_path = os.path.join(self.log_directory, 'giftlog.txt')
+            
             if player_id != "244886619":
                 self.cursor.execute("""
                     SELECT status FROM user_giftcodes 
@@ -315,15 +317,17 @@ class GiftOperations(commands.Cog):
                 
                 existing_record = self.cursor.fetchone()
                 if existing_record:
-                    print(f"CACHE HIT - User {player_id} already processed with status: {existing_record[0]}\n")
+                    with open(log_file_path, 'a', encoding='utf-8') as log_file:
+                        log_file.write(f"CACHE HIT - User {player_id} already processed with status: {existing_record[0]}\n")
                     return existing_record[0]
 
             session, response_stove_info = self.get_stove_info_wos(player_id=player_id)
             
-            print(f"\nAPI REQUEST - Player Info\n")
-            print(f"Player ID: {player_id}\n")
-            print(f"Response: {json.dumps(response_stove_info.json(), indent=2)}\n")
-            print("-" * 50 + "\n")
+            with open(log_file_path, 'a', encoding='utf-8') as log_file:
+                log_file.write(f"\nAPI REQUEST - Player Info\n")
+                log_file.write(f"Player ID: {player_id}\n")
+                log_file.write(f"Response: {json.dumps(response_stove_info.json(), indent=2)}\n")
+                log_file.write("-" * 50 + "\n")
             
             if response_stove_info.json().get("msg") == "success":
                 data_to_encode = {
@@ -340,11 +344,12 @@ class GiftOperations(commands.Cog):
                 
                 response_json = response_giftcode.json()
                 
-                print(f"\nAPI REQUEST - Gift Code\n")
-                print(f"Player ID: {player_id}\n")
-                print(f"Gift Code: {giftcode}\n")
-                print(f"Response: {json.dumps(response_json, indent=2)}\n")
-                print("-" * 50 + "\n")
+                with open(log_file_path, 'a', encoding='utf-8') as log_file:
+                    log_file.write(f"\nAPI REQUEST - Gift Code\n")
+                    log_file.write(f"Player ID: {player_id}\n")
+                    log_file.write(f"Gift Code: {giftcode}\n")
+                    log_file.write(f"Response: {json.dumps(response_json, indent=2)}\n")
+                    log_file.write("-" * 50 + "\n")
                 
                 if response_json.get("msg") == "TIME ERROR." and response_json.get("err_code") == 40007:
                     status = "TIME_ERROR"
@@ -370,18 +375,21 @@ class GiftOperations(commands.Cog):
                             VALUES (?, ?, ?)
                         """, (player_id, giftcode, status))
                         self.conn.commit()
-                        print(f"DATABASE - Updated: User {player_id}, Code {giftcode}, Status {status}\n")
+                        with open(log_file_path, 'a', encoding='utf-8') as log_file:
+                            log_file.write(f"DATABASE - Updated: User {player_id}, Code {giftcode}, Status {status}\n")
                     except Exception as e:
-                        print(f"DATABASE ERROR: {str(e)}\n")
-                        print(f"STACK TRACE: {traceback.format_exc()}\n")
+                        with open(log_file_path, 'a', encoding='utf-8') as log_file:
+                            log_file.write(f"DATABASE ERROR: {str(e)}\n")
+                            log_file.write(f"STACK TRACE: {traceback.format_exc()}\n")
 
                 return status
 
             return "ERROR"
 
         except Exception as e:
-            print(f"ERROR in claim_giftcode_rewards_wos: {str(e)}\n")
-            print(f"STACK TRACE: {traceback.format_exc()}\n")
+            with open(log_file_path, 'a', encoding='utf-8') as log_file:
+                log_file.write(f"ERROR in claim_giftcode_rewards_wos: {str(e)}\n")
+                log_file.write(f"STACK TRACE: {traceback.format_exc()}\n")
             return "ERROR"
 
     @tasks.loop(seconds=300)
@@ -1550,6 +1558,37 @@ class GiftOperations(commands.Cog):
             ephemeral=True
         )
 
+    async def process_member(self, member, giftcode, previous_users):
+        player_id = member[0]
+        try:
+            with sqlite3.connect('db/users.sqlite') as users_db:
+                cursor = users_db.cursor()
+                cursor.execute("SELECT nickname FROM users WHERE fid = ?", (player_id,))
+                nickname = cursor.fetchone()[0]
+
+            if player_id in previous_users:
+                return {
+                    "status": "already_used",
+                    "player_id": player_id,
+                    "nickname": nickname
+                }
+
+            response_status = await self.claim_giftcode_rewards_wos(player_id, giftcode)
+            
+            return {
+                "status": response_status,
+                "player_id": player_id,
+                "nickname": nickname
+            }
+        except Exception as e:
+            print(f"Error processing member {player_id}: {str(e)}")
+            return {
+                "status": "error",
+                "player_id": player_id,
+                "nickname": f"Unknown ({player_id})",
+                "error": str(e)
+            }
+
     async def use_giftcode_for_alliance(self, alliance_id, giftcode):
         try:
             operation_counter = 0
@@ -1681,40 +1720,8 @@ class GiftOperations(commands.Cog):
             while i < len(members):
                 batch_members = members[i:i+batch_size]
                 
-                # Create async tasks for each member in the batch
-                async def process_member(member):
-                    player_id = member[0]
-                    try:
-                        with sqlite3.connect('db/users.sqlite') as users_db:
-                            cursor = users_db.cursor()
-                            cursor.execute("SELECT nickname FROM users WHERE fid = ?", (player_id,))
-                            nickname = cursor.fetchone()[0]
-
-                        if player_id in previous_users:
-                            return {
-                                "status": "already_used",
-                                "player_id": player_id,
-                                "nickname": nickname
-                            }
-
-                        response_status = await self.claim_giftcode_rewards_wos(player_id, giftcode)
-                        
-                        return {
-                            "status": response_status,
-                            "player_id": player_id,
-                            "nickname": nickname
-                        }
-                    except Exception as e:
-                        print(f"Error processing member {player_id}: {str(e)}")
-                        return {
-                            "status": "error",
-                            "player_id": player_id,
-                            "nickname": f"Unknown ({player_id})",
-                            "error": str(e)
-                        }
-                
                 # Create tasks for batch processing
-                batch_tasks = [process_member(member) for member in batch_members]
+                batch_tasks = [self.process_member(member, giftcode, previous_users) for member in batch_members]
                 
                 # Wait for all tasks in this batch to complete
                 batch_results = await asyncio.gather(*batch_tasks)
