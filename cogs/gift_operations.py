@@ -275,7 +275,7 @@ class GiftOperations(commands.Cog):
         sign = hashlib.md5(f"{encoded_data}{secret}".encode()).hexdigest()
         return {"sign": sign, **data}
 
-    def get_stove_info_wos(self, player_id, proxy=None):
+    async def get_stove_info_wos(self, player_id, proxy=None):
         session = requests.Session()
         session.mount("https://", HTTPAdapter(max_retries=self.retry_config))
 
@@ -321,7 +321,7 @@ class GiftOperations(commands.Cog):
                         log_file.write(f"CACHE HIT - User {player_id} already processed with status: {existing_record[0]}\n")
                     return existing_record[0]
 
-            session, response_stove_info = self.get_stove_info_wos(player_id=player_id)
+            session, response_stove_info = await self.get_stove_info_wos(player_id=player_id)
             
             with open(log_file_path, 'a', encoding='utf-8') as log_file:
                 log_file.write(f"\nAPI REQUEST - Player Info\n")
