@@ -392,6 +392,380 @@ class GiftOperations(commands.Cog):
                 log_file.write(f"STACK TRACE: {traceback.format_exc()}\n")
             return "ERROR"
 
+    async def use_giftcode_for_alliance(self, alliance_id, giftcode):
+        try:
+            successful_users = []
+            already_used_users = []
+            failed_users = []
+            timeout_retry_users = []
+            
+            self.alliance_cursor.execute(
+                "SELECT channel_id FROM alliancesettings WHERE alliance_id = ?",
+                (alliance_id,)
+            )
+            channel_result = self.alliance_cursor.fetchone()
+            if not channel_result:
+                return False
+            
+            self.alliance_cursor.execute(
+                "SELECT name FROM alliance_list WHERE alliance_id = ?",
+                (alliance_id,)
+            )
+            name_result = self.alliance_cursor.fetchone()
+            if not name_result:
+                return False
+            
+            channel_id = channel_result[0]
+            alliance_name = name_result[0]
+            
+            channel = self.bot.get_channel(channel_id)
+            if not channel:
+                return False
+
+            await asyncio.sleep(0)
+
+            initial_check = await self.claim_giftcode_rewards_wos("244886619", giftcode)
+            if initial_check == "USAGE_LIMIT":
+                usage_limit_embed = discord.Embed(
+                    title="❌ Gift Code Usage Limit Reached",
+                    description=(
+                        f"**Gift Code Details**\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🏰 **Alliance:** `{alliance_name}`\n"
+                        f"🎁 **Gift Code:** `{giftcode}`\n"
+                        f"❌ **Status:** Usage limit has been reached for this code\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    ),
+                    color=discord.Color.red()
+                )
+                await channel.send(embed=usage_limit_embed)
+                return False
+
+            await asyncio.sleep(0)
+
+            users_conn = sqlite3.connect('db/users.sqlite')
+            users_cursor = users_conn.cursor()
+
+            users_cursor.execute(
+                "SELECT fid FROM users WHERE alliance = ?",
+                (str(alliance_id),)
+            )
+            members = users_cursor.fetchall()
+            users_conn.close()
+
+            total_members = len(members)
+            processed = 0
+            success = 0
+            received = 0
+            failed = 0
+
+            embed = discord.Embed(
+                title="🎁 Auto Gift Code Progress",
+                description=(
+                    f"**Gift Code Distribution Started**\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🏰 **Alliance:** `{alliance_name}`\n"
+                    f"🎁 **Gift Code:** `{giftcode}`\n"
+                    f"👥 **Total Members:** `{total_members}`\n"
+                    f"✅ **Success:** `{success}`\n"
+                    f"⚠️ **Already Used:** `{received}`\n"
+                    f"❌ **Failed:** `{failed}`\n"
+                    f"⏳ **Progress:** `{processed}/{total_members}`\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                ),
+                color=discord.Color.blue()
+            )
+            status_message = await channel.send(embed=embed)
+
+            log_file_path = os.path.join(self.log_directory, 'giftlog.txt')
+            with open(log_file_path, 'a', encoding='utf-8') as log_file:
+                log_file.write(f"\nGIFT CODE: {giftcode}\n")
+                log_file.write(f"USAGE TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                log_file.write("-----------------------------\n")
+                log_file.write("Alliance Member List\n\n")
+
+            # Get list of users who already used this code
+            member_ids = [member[0] for member in members]
+            if member_ids:
+                placeholders = ','.join('?' * len(member_ids))
+                self.cursor.execute(f"""
+                    SELECT fid, status FROM user_giftcodes 
+                    WHERE giftcode = ? AND fid IN ({placeholders})
+                """, (giftcode, *member_ids))
+                previous_users = {row[0]: row[1] for row in self.cursor.fetchall()}
+            else:
+                previous_users = {}
+
+            received = len(previous_users)
+            processed = received
+            
+            embed.description = (
+                f"**Processing Gift Code**\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🏰 **Alliance:** `{alliance_name}`\n"
+                f"🎁 **Gift Code:** `{giftcode}`\n"
+                f"👥 **Total Members:** `{total_members}`\n"
+                f"✅ **Success:** `{success}`\n"
+                f"⚠️ **Already Used:** `{received}`\n"
+                f"❌ **Failed:** `{failed}`\n"
+                f"⏳ **Progress:** `{processed}/{total_members}`\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            )
+            await status_message.edit(embed=embed)
+
+            await asyncio.sleep(0)
+            
+            # Filter out members who already used the code
+            members_to_process = [member for member in members if member[0] not in previous_users]
+            
+            # Process members in batches of exactly 20 at a time
+            batch_size = 20
+            
+            # Only create batches if we have members to process
+            if members_to_process:
+                for i in range(0, len(members_to_process), batch_size):
+                    batch_members = members_to_process[i:i+batch_size]
+                    
+                    # Process exactly this batch of 20 (or less if at the end) simultaneously
+                    batch_tasks = [self.process_member(member, giftcode, previous_users) for member in batch_members]
+                    batch_results = await asyncio.gather(*batch_tasks)
+                    
+                    # Process results from this batch
+                    for result in batch_results:
+                        # Write to log file
+                        with open(log_file_path, 'a', encoding='utf-8') as log_file:
+                            if result["status"] == "error":
+                                log_file.write(f"Error with {result['player_id']}: {result.get('error', 'Unknown error')}\n")
+                            else:
+                                log_file.write(f"{result['nickname']} - {result['status']}\n")
+                        
+                        # Update counters based on status
+                        if result["status"] == "already_used":
+                            already_used_users.append(result["nickname"])
+                        elif result["status"] == "SUCCESS":
+                            success += 1
+                            processed += 1
+                            successful_users.append(result["nickname"])
+                            try:
+                                # Update database in a non-blocking way by creating a task
+                                asyncio.create_task(self._update_user_giftcode(
+                                    result["player_id"], giftcode, result["status"]
+                               ))
+                            except sqlite3.IntegrityError:
+                                pass
+                        elif result["status"] in ["RECEIVED", "SAME TYPE EXCHANGE"]:
+                            received += 1
+                            processed += 1
+                            already_used_users.append(result["nickname"])
+                            try:
+                                # Update database in a non-blocking way
+                                asyncio.create_task(self._update_user_giftcode(
+                                    result["player_id"], giftcode, result["status"]
+                                ))
+                            except sqlite3.IntegrityError:
+                                pass
+                        elif result["status"] == "TIMEOUT_RETRY":
+                            timeout_retry_users.append((result["player_id"], result["nickname"]))
+                        elif result["status"] == "error":
+                            failed += 1
+                            processed += 1
+                            failed_users.append(result["nickname"])
+                        else:
+                            failed += 1
+                            processed += 1
+                            failed_users.append(result["nickname"])
+                    
+                    # Update progress embed after each batch
+                    embed.description = (
+                        f"**Processing Gift Code**\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🏰 **Alliance:** `{alliance_name}`\n"
+                        f"🎁 **Gift Code:** `{giftcode}`\n"
+                        f"👥 **Total Members:** `{total_members}`\n"
+                        f"✅ **Success:** `{success}`\n"
+                        f"⚠️ **Already Used:** `{received}`\n"
+                        f"❌ **Failed:** `{failed}`\n"
+                        f"⏳ **Progress:** `{processed}/{total_members}`\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    )
+                    await status_message.edit(embed=embed)
+                    
+                    # Small delay between batches to avoid rate limiting
+                    await asyncio.sleep(0.5)
+
+            # Handle any timeout retry cases
+            if timeout_retry_users:
+                embed.description = (
+                    f"**Processing Timeout Retry Users**\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🏰 **Alliance:** `{alliance_name}`\n"
+                    f"🎁 **Gift Code:** `{giftcode}`\n"
+                    f"👥 **Total Members:** `{total_members}`\n"
+                    f"✅ **Success:** `{success}`\n"
+                    f"⚠️ **Already Used:** `{received}`\n"
+                    f"❌ **Failed:** `{failed}`\n"
+                    f"⏳ **Progress:** `{processed}/{total_members}`\n"
+                    f"🔄 **Remaining Retry:** `{len(timeout_retry_users)}`\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                )
+                await status_message.edit(embed=embed)
+                
+                # Process timeout retries in batches of 20 as well
+                for i in range(0, len(timeout_retry_users), batch_size):
+                    batch_retries = timeout_retry_users[i:i+batch_size]
+                    retry_tasks = []
+                    
+                    for player_id, nickname in batch_retries:
+                        retry_tasks.append(self._handle_timeout_retry(player_id, nickname, giftcode))
+                    
+                    retry_results = await asyncio.gather(*retry_tasks)
+                    
+                    for result in retry_results:
+                        if result["status"] == "SUCCESS":
+                            success += 1
+                            processed += 1
+                            successful_users.append(result["nickname"])
+                        elif result["status"] in ["RECEIVED", "SAME TYPE EXCHANGE"]:
+                            received += 1
+                            processed += 1
+                            already_used_users.append(result["nickname"])
+                        else:
+                            failed += 1
+                            processed += 1
+                            failed_users.append(result["nickname"])
+                    
+                    # Update progress after each batch of retries
+                    retry_count = len(timeout_retry_users) - len(batch_retries) * (i // batch_size + 1)
+                    retry_count = max(0, retry_count)  # Ensure no negative values
+                    
+                    embed.description = (
+                        f"**Processing Timeout Retry Users**\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🏰 **Alliance:** `{alliance_name}`\n"
+                        f"🎁 **Gift Code:** `{giftcode}`\n"
+                        f"👥 **Total Members:** `{total_members}`\n"
+                        f"✅ **Success:** `{success}`\n"
+                        f"⚠️ **Already Used:** `{received}`\n"
+                        f"❌ **Failed:** `{failed}`\n"
+                        f"⏳ **Progress:** `{processed}/{total_members}`\n"
+                        f"🔄 **Remaining Retry:** `{retry_count}`\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    )
+                    await status_message.edit(embed=embed)
+                    
+                    await asyncio.sleep(0.5)
+
+            # Create log file
+            log_dir = 'giftcode_logs'
+            if not os.path.exists(log_dir):
+                os.makedirs(log_dir)
+
+            log_filename = f"{giftcode}-{alliance_name}.txt"
+            log_path = os.path.join(log_dir, log_filename)
+
+            with open(log_path, 'w', encoding='utf-8') as log_file:
+                log_file.write(f"Alliance: {alliance_name}\n")
+                log_file.write(f"Total Members: {total_members}\n")
+                log_file.write(f"Successful: {success}\n")
+                log_file.write(f"Already Used: {received}\n")
+                log_file.write(f"Failed: {failed}\n\n")
+
+                log_file.write(f"Successful Users ({len(successful_users)})\n")
+                log_file.write("------------------------\n")
+                for user in successful_users:
+                    log_file.write(f"{user}\n")
+                log_file.write("\n")
+
+                log_file.write(f"Already Used ({len(already_used_users)})\n")
+                log_file.write("------------------------\n")
+                for user in already_used_users:
+                    log_file.write(f"{user}\n")
+                log_file.write("\n")
+
+                log_file.write(f"Failed Users ({len(failed_users)})\n")
+                log_file.write("------------------------\n")
+                for user in failed_users:
+                    log_file.write(f"{user}\n")
+
+            # Final status update
+            embed.title = "🎁 Gift Code Process Complete"
+            embed.description = (
+                f"**Gift Code Distribution Complete**\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🏰 **Alliance:** `{alliance_name}`\n"
+                f"🎁 **Gift Code:** `{giftcode}`\n"
+                f"👥 **Total Members:** `{total_members}`\n"
+                f"✅ **Success:** `{success}`\n"
+                f"⚠️ **Already Used:** `{received}`\n"
+                f"❌ **Failed:** `{failed}`\n"
+                f"⏳ **Progress:** `{processed}/{total_members}`\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            )
+            embed.color = discord.Color.green()
+            await status_message.edit(embed=embed)
+            
+            return True
+
+        except Exception as e:
+            print(f"Error in use_giftcode_for_alliance: {str(e)}")
+            traceback.print_exc()
+            return False
+
+    async def _update_user_giftcode(self, player_id, giftcode, status):
+        """Helper method to update the user giftcode database in a non-blocking way"""
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None, 
+                lambda: self._db_update_user_giftcode(player_id, giftcode, status)
+            )
+        except Exception as e:
+            print(f"Error updating user giftcode in database: {str(e)}")
+    
+    def _db_update_user_giftcode(self, player_id, giftcode, status):
+        """Execute the database update in a separate thread"""
+        try:
+            with sqlite3.connect('db/giftcode.sqlite') as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT OR REPLACE INTO user_giftcodes (fid, giftcode, status)
+                    VALUES (?, ?, ?)
+                """, (player_id, giftcode, status))
+                conn.commit()
+        except Exception as e:
+            print(f"Database error: {str(e)}")
+    
+    async def _handle_timeout_retry(self, player_id, nickname, giftcode):
+        """Helper method to handle timeout retry in non-blocking way"""
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            response_status = await self.claim_giftcode_rewards_wos(player_id, giftcode)
+            
+            if response_status != "TIMEOUT_RETRY":
+                if response_status in ["SUCCESS", "RECEIVED", "SAME TYPE EXCHANGE"]:
+                    # Update database in a non-blocking way
+                    asyncio.create_task(self._update_user_giftcode(
+                        player_id, giftcode, response_status
+                    ))
+                
+                return {
+                    "player_id": player_id,
+                    "nickname": nickname,
+                    "status": response_status
+                }
+            
+            retry_count += 1
+            await asyncio.sleep(1)  # Brief delay between retries
+        
+        # If we exhausted retries, mark as failed
+        return {
+            "player_id": player_id,
+            "nickname": nickname,
+            "status": "ERROR"
+        }
+
     @tasks.loop(seconds=300)
     async def check_channels_loop(self):
         try:
@@ -1557,331 +1931,6 @@ class GiftOperations(commands.Cog):
             view=view,
             ephemeral=True
         )
-
-    async def use_giftcode_for_alliance(self, alliance_id, giftcode):
-        try:
-            operation_counter = 0
-            
-            successful_users = []
-            already_used_users = []
-            failed_users = []
-            
-            self.alliance_cursor.execute(
-                "SELECT channel_id FROM alliancesettings WHERE alliance_id = ?",
-                (alliance_id,)
-            )
-            channel_result = self.alliance_cursor.fetchone()
-            if not channel_result:
-                return False
-            
-            self.alliance_cursor.execute(
-                "SELECT name FROM alliance_list WHERE alliance_id = ?",
-                (alliance_id,)
-            )
-            name_result = self.alliance_cursor.fetchone()
-            if not name_result:
-                return False
-            
-            channel_id = channel_result[0]
-            alliance_name = name_result[0]
-            
-            channel = self.bot.get_channel(channel_id)
-            if not channel:
-                return False
-
-            await asyncio.sleep(0)
-
-            initial_check = await self.claim_giftcode_rewards_wos("244886619", giftcode)
-            if initial_check == "USAGE_LIMIT":
-                usage_limit_embed = discord.Embed(
-                    title="❌ Gift Code Usage Limit Reached",
-                    description=(
-                        f"**Gift Code Details**\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"🏰 **Alliance:** `{alliance_name}`\n"
-                        f"🎁 **Gift Code:** `{giftcode}`\n"
-                        f"❌ **Status:** Usage limit has been reached for this code\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                    ),
-                    color=discord.Color.red()
-                )
-                await channel.send(embed=usage_limit_embed)
-                return False
-
-            await asyncio.sleep(0)
-
-            users_conn = sqlite3.connect('db/users.sqlite')
-            users_cursor = users_conn.cursor()
-
-            users_cursor.execute(
-                "SELECT fid FROM users WHERE alliance = ?",
-                (str(alliance_id),)
-            )
-            members = users_cursor.fetchall()
-            users_conn.close()
-
-            total_members = len(members)
-            processed = 0
-            success = 0
-            received = 0
-            failed = 0
-
-            embed = discord.Embed(
-                title="🎁 Auto Gift Code Progress",
-                description=(
-                    f"**Gift Code Distribution Started**\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"🏰 **Alliance:** `{alliance_name}`\n"
-                    f"🎁 **Gift Code:** `{giftcode}`\n"
-                    f"👥 **Total Members:** `{total_members}`\n"
-                    f"✅ **Success:** `{success}`\n"
-                    f"⚠️ **Already Used:** `{received}`\n"
-                    f"❌ **Failed:** `{failed}`\n"
-                    f"⏳ **Progress:** `{processed}/{total_members}`\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                ),
-                color=discord.Color.blue()
-            )
-            status_message = await channel.send(embed=embed)
-
-            await asyncio.sleep(0)
-
-            log_file_path = os.path.join(self.log_directory, 'giftlog.txt')
-            with open(log_file_path, 'a', encoding='utf-8') as log_file:
-                log_file.write(f"\nGIFT CODE: {giftcode}\n")
-                log_file.write(f"USAGE TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                log_file.write("-----------------------------\n")
-                log_file.write("Alliance Member List\n\n")
-
-            member_ids = [member[0] for member in members]
-            placeholders = ','.join('?' * len(member_ids))
-            self.cursor.execute(f"""
-                SELECT fid, status FROM user_giftcodes 
-                WHERE giftcode = ? AND fid IN ({placeholders})
-            """, (giftcode, *member_ids))
-            previous_users = {row[0]: row[1] for row in self.cursor.fetchall()}
-
-            received = len(previous_users)
-            processed = received
-            
-            embed.description = (
-                f"**Processing Gift Code**\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🏰 **Alliance:** `{alliance_name}`\n"
-                f"🎁 **Gift Code:** `{giftcode}`\n"
-                f"👥 **Total Members:** `{total_members}`\n"
-                f"✅ **Success:** `{success}`\n"
-                f"⚠️ **Already Used:** `{received}`\n"
-                f"❌ **Failed:** `{failed}`\n"
-                f"⏳ **Progress:** `{processed}/{total_members}`\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            )
-            await status_message.edit(embed=embed)
-
-            await asyncio.sleep(0)
-
-            timeout_retry_users = []
-            
-            for member in members:
-                operation_counter += 1
-                if operation_counter % 10 == 0:
-                    await asyncio.sleep(0)
-                
-                player_id = member[0]
-                try:
-                    with sqlite3.connect('db/users.sqlite') as users_db:
-                        cursor = users_db.cursor()
-                        cursor.execute("SELECT nickname FROM users WHERE fid = ?", (player_id,))
-                        nickname = cursor.fetchone()[0]
-
-                    if player_id in previous_users:
-                        already_used_users.append(nickname)
-                        continue
-
-                    response_status = await self.claim_giftcode_rewards_wos(player_id, giftcode)
-                    
-                    with open(log_file_path, 'a', encoding='utf-8') as log_file:
-                        log_file.write(f"{nickname} - {response_status}\n")
-
-                    if response_status == "SUCCESS":
-                        success += 1
-                        processed += 1
-                        successful_users.append(nickname)
-                        try:
-                            self.cursor.execute("""
-                                INSERT INTO user_giftcodes (fid, giftcode, status)
-                                VALUES (?, ?, ?)
-                            """, (player_id, giftcode, response_status))
-                            self.conn.commit()
-                        except sqlite3.IntegrityError:
-                            pass
-                    elif response_status in ["RECEIVED", "SAME TYPE EXCHANGE"]:
-                        received += 1
-                        processed += 1
-                        already_used_users.append(nickname)
-                        try:
-                            self.cursor.execute("""
-                                INSERT INTO user_giftcodes (fid, giftcode, status)
-                                VALUES (?, ?, ?)
-                            """, (player_id, giftcode, response_status))
-                            self.conn.commit()
-                        except sqlite3.IntegrityError:
-                            pass
-                    elif response_status == "TIMEOUT_RETRY":
-                        timeout_retry_users.append((player_id, nickname))
-                    else:
-                        failed += 1
-                        processed += 1
-                        failed_users.append(nickname)
-
-                    embed.description = (
-                        f"**Processing Gift Code**\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"🏰 **Alliance:** `{alliance_name}`\n"
-                        f"🎁 **Gift Code:** `{giftcode}`\n"
-                        f"👥 **Total Members:** `{total_members}`\n"
-                        f"✅ **Success:** `{success}`\n"
-                        f"⚠️ **Already Used:** `{received}`\n"
-                        f"❌ **Failed:** `{failed}`\n"
-                        f"⏳ **Progress:** `{processed}/{total_members}`\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                    )
-                    await status_message.edit(embed=embed)
-
-                except Exception as e:
-                    print(f"Error processing member {player_id}: {str(e)}")
-                    with open(log_file_path, 'a', encoding='utf-8') as log_file:
-                        log_file.write(f"{nickname} - ERROR: {str(e)}\n")
-                    failed += 1
-                    processed += 1
-                    failed_users.append(nickname)
-                    await status_message.edit(embed=embed)
-
-            await asyncio.sleep(0)
-
-            if timeout_retry_users:
-                embed.description = (
-                    f"**Processing Timeout Retry Users**\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"🏰 **Alliance:** `{alliance_name}`\n"
-                    f"🎁 **Gift Code:** `{giftcode}`\n"
-                    f"👥 **Total Members:** `{total_members}`\n"
-                    f"✅ **Success:** `{success}`\n"
-                    f"⚠️ **Already Used:** `{received}`\n"
-                    f"❌ **Failed:** `{failed}`\n"
-                    f"⏳ **Progress:** `{processed}/{total_members}`\n"
-                    f"🔄 **Remaining Retry:** `{len(timeout_retry_users)}`\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                )
-                await status_message.edit(embed=embed)
-
-                for player_id, nickname in timeout_retry_users[:]:
-                    operation_counter += 1
-                    if operation_counter % 10 == 0:
-                        await asyncio.sleep(0)
-                        
-                    while True:
-                        response_status = await self.claim_giftcode_rewards_wos(player_id, giftcode)
-                        
-                        if response_status != "TIMEOUT_RETRY":
-                            if response_status == "SUCCESS":
-                                success += 1
-                                processed += 1
-                                try:
-                                    self.cursor.execute("""
-                                        INSERT OR REPLACE INTO user_giftcodes (fid, giftcode, status)
-                                        VALUES (?, ?, ?)
-                                    """, (player_id, giftcode, response_status))
-                                    self.conn.commit()
-                                except Exception as e:
-                                    with open(log_file_path, 'a', encoding='utf-8') as log_file:
-                                        log_file.write(f"DATABASE ERROR: {str(e)}\n")
-                            elif response_status in ["RECEIVED", "SAME TYPE EXCHANGE"]:
-                                received += 1
-                                processed += 1
-                                try:
-                                    self.cursor.execute("""
-                                        INSERT OR REPLACE INTO user_giftcodes (fid, giftcode, status)
-                                        VALUES (?, ?, ?)
-                                    """, (player_id, giftcode, response_status))
-                                    self.conn.commit()
-                                except Exception as e:
-                                    with open(log_file_path, 'a', encoding='utf-8') as log_file:
-                                        log_file.write(f"DATABASE ERROR: {str(e)}\n")
-                            else:
-                                failed += 1
-                                processed += 1
-                            
-                            timeout_retry_users.remove((player_id, nickname))
-                            break
-
-                        embed.description = (
-                            f"**Processing Timeout Retry Users**\n"
-                            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                            f"🏰 **Alliance:** `{alliance_name}`\n"
-                            f"🎁 **Gift Code:** `{giftcode}`\n"
-                            f"👥 **Total Members:** `{total_members}`\n"
-                            f"✅ **Success:** `{success}`\n"
-                            f"⚠️ **Already Used:** `{received}`\n"
-                            f"❌ **Failed:** `{failed}`\n"
-                            f"⏳ **Progress:** `{processed}/{total_members}`\n"
-                            f"🔄 **Remaining Retry:** `{len(timeout_retry_users)}`\n"
-                            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                        )
-                        await status_message.edit(embed=embed)
-
-            log_dir = 'giftcode_logs'
-            if not os.path.exists(log_dir):
-                os.makedirs(log_dir)
-
-            log_filename = f"{giftcode}-{alliance_name}.txt"
-            log_path = os.path.join(log_dir, log_filename)
-
-            with open(log_path, 'w', encoding='utf-8') as log_file:
-                log_file.write(f"Alliance: {alliance_name}\n")
-                log_file.write(f"Total Members: {total_members}\n")
-                log_file.write(f"Successful: {success}\n")
-                log_file.write(f"Already Used: {received}\n")
-                log_file.write(f"Failed: {failed}\n\n")
-
-                log_file.write(f"Successful Users ({len(successful_users)})\n")
-                log_file.write("------------------------\n")
-                for user in successful_users:
-                    log_file.write(f"{user}\n")
-                log_file.write("\n")
-
-                log_file.write(f"Already Used ({len(already_used_users)})\n")
-                log_file.write("------------------------\n")
-                for user in already_used_users:
-                    log_file.write(f"{user}\n")
-                log_file.write("\n")
-
-                log_file.write(f"Failed Users ({len(failed_users)})\n")
-                log_file.write("------------------------\n")
-                for user in failed_users:
-                    log_file.write(f"{user}\n")
-
-            embed.title = "🎁 Gift Code Process Complete"
-            embed.description = (
-                f"**Gift Code Distribution Complete**\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🏰 **Alliance:** `{alliance_name}`\n"
-                f"🎁 **Gift Code:** `{giftcode}`\n"
-                f"👥 **Total Members:** `{total_members}`\n"
-                f"✅ **Success:** `{success}`\n"
-                f"⚠️ **Already Used:** `{received}`\n"
-                f"❌ **Failed:** `{failed}`\n"
-                f"⏳ **Progress:** `{processed}/{total_members}`\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            )
-            embed.color = discord.Color.green()
-            await status_message.edit(embed=embed)
-            
-            return True
-
-        except Exception as e:
-            print(f"Error in use_giftcode_for_alliance: {str(e)}")
-            return False
 
 class CreateGiftCodeModal(discord.ui.Modal):
     def __init__(self, cog):
