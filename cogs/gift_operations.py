@@ -7,6 +7,7 @@ import hashlib
 import json
 from datetime import datetime
 import sqlite3
+import aiosqlite
 from discord.ext import tasks
 import asyncio
 import re
