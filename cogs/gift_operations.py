@@ -11,6 +11,7 @@ import aiosqlite
 from discord.ext import tasks
 import asyncio
 import re
+import functools
 
 from urllib3 import Retry
 from .alliance_member_operations import AllianceSelectView
@@ -136,8 +137,11 @@ class GiftOperations(commands.Cog):
         
     # Execute database operations in a separate thread to avoid blocking the event loop
     async def run_in_thread(self, func, *args, **kwargs):
+        # Create a partial function that includes keyword arguments
+        wrapped_func = functools.partial(func, *args, **kwargs)
+        # Run the partial function in the executor
         return await asyncio.get_event_loop().run_in_executor(
-            self.thread_executor, func, *args, **kwargs
+            self.thread_executor, wrapped_func
         )
         
     # Async wrapper for database operations
