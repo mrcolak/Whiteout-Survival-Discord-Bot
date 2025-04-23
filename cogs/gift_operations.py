@@ -307,8 +307,6 @@ class GiftOperations(commands.Cog):
 
     async def claim_giftcode_rewards_wos(self, player_id, giftcode):
         try:
-            log_file_path = os.path.join(self.log_directory, 'giftlog.txt')
-            
             if player_id != "244886619":
                 self.cursor.execute("""
                     SELECT status FROM user_giftcodes 
@@ -317,17 +315,15 @@ class GiftOperations(commands.Cog):
                 
                 existing_record = self.cursor.fetchone()
                 if existing_record:
-                    with open(log_file_path, 'a', encoding='utf-8') as log_file:
-                        log_file.write(f"CACHE HIT - User {player_id} already processed with status: {existing_record[0]}\n")
+                    print(f"CACHE HIT - User {player_id} already processed with status: {existing_record[0]}\n")
                     return existing_record[0]
 
             session, response_stove_info = self.get_stove_info_wos(player_id=player_id)
             
-            with open(log_file_path, 'a', encoding='utf-8') as log_file:
-                log_file.write(f"\nAPI REQUEST - Player Info\n")
-                log_file.write(f"Player ID: {player_id}\n")
-                log_file.write(f"Response: {json.dumps(response_stove_info.json(), indent=2)}\n")
-                log_file.write("-" * 50 + "\n")
+            print(f"\nAPI REQUEST - Player Info\n")
+            print(f"Player ID: {player_id}\n")
+            print(f"Response: {json.dumps(response_stove_info.json(), indent=2)}\n")
+            print("-" * 50 + "\n")
             
             if response_stove_info.json().get("msg") == "success":
                 data_to_encode = {
@@ -344,12 +340,11 @@ class GiftOperations(commands.Cog):
                 
                 response_json = response_giftcode.json()
                 
-                with open(log_file_path, 'a', encoding='utf-8') as log_file:
-                    log_file.write(f"\nAPI REQUEST - Gift Code\n")
-                    log_file.write(f"Player ID: {player_id}\n")
-                    log_file.write(f"Gift Code: {giftcode}\n")
-                    log_file.write(f"Response: {json.dumps(response_json, indent=2)}\n")
-                    log_file.write("-" * 50 + "\n")
+                print(f"\nAPI REQUEST - Gift Code\n")
+                print(f"Player ID: {player_id}\n")
+                print(f"Gift Code: {giftcode}\n")
+                print(f"Response: {json.dumps(response_json, indent=2)}\n")
+                print("-" * 50 + "\n")
                 
                 if response_json.get("msg") == "TIME ERROR." and response_json.get("err_code") == 40007:
                     status = "TIME_ERROR"
@@ -375,21 +370,18 @@ class GiftOperations(commands.Cog):
                             VALUES (?, ?, ?)
                         """, (player_id, giftcode, status))
                         self.conn.commit()
-                        with open(log_file_path, 'a', encoding='utf-8') as log_file:
-                            log_file.write(f"DATABASE - Updated: User {player_id}, Code {giftcode}, Status {status}\n")
+                        print(f"DATABASE - Updated: User {player_id}, Code {giftcode}, Status {status}\n")
                     except Exception as e:
-                        with open(log_file_path, 'a', encoding='utf-8') as log_file:
-                            log_file.write(f"DATABASE ERROR: {str(e)}\n")
-                            log_file.write(f"STACK TRACE: {traceback.format_exc()}\n")
+                        print(f"DATABASE ERROR: {str(e)}\n")
+                        print(f"STACK TRACE: {traceback.format_exc()}\n")
 
                 return status
 
             return "ERROR"
 
         except Exception as e:
-            with open(log_file_path, 'a', encoding='utf-8') as log_file:
-                log_file.write(f"ERROR in claim_giftcode_rewards_wos: {str(e)}\n")
-                log_file.write(f"STACK TRACE: {traceback.format_exc()}\n")
+            print(f"ERROR in claim_giftcode_rewards_wos: {str(e)}\n")
+            print(f"STACK TRACE: {traceback.format_exc()}\n")
             return "ERROR"
 
     @tasks.loop(seconds=300)
@@ -1707,9 +1699,6 @@ class GiftOperations(commands.Cog):
 
                         response_status = await self.claim_giftcode_rewards_wos(player_id, giftcode)
                         
-                        with open(log_file_path, 'a', encoding='utf-8') as log_file:
-                            log_file.write(f"{nickname} - {response_status}\n")
-
                         return {
                             "status": response_status,
                             "player_id": player_id,
@@ -1717,8 +1706,6 @@ class GiftOperations(commands.Cog):
                         }
                     except Exception as e:
                         print(f"Error processing member {player_id}: {str(e)}")
-                        with open(log_file_path, 'a', encoding='utf-8') as log_file:
-                            log_file.write(f"Error with {player_id}: {str(e)}\n")
                         return {
                             "status": "error",
                             "player_id": player_id,
@@ -1734,6 +1721,13 @@ class GiftOperations(commands.Cog):
                 
                 # Process the results
                 for result in batch_results:
+                    # Write to log file outside the async function
+                    with open(log_file_path, 'a', encoding='utf-8') as log_file:
+                        if result["status"] == "error":
+                            log_file.write(f"Error with {result['player_id']}: {result.get('error', 'Unknown error')}\n")
+                        else:
+                            log_file.write(f"{result['nickname']} - {result['status']}\n")
+                            
                     if result["status"] == "already_used":
                         already_used_users.append(result["nickname"])
                     elif result["status"] == "SUCCESS":
