@@ -60,7 +60,7 @@ class CaptchaSolver:
         """
         try:
             # Ensure tesseract path is set (modify this based on your installation)
-            # pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+            # pytesseract.py tesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
             
             if not custom_config:
                 # Configuration optimized for captchas with letters and numbers
@@ -339,17 +339,13 @@ class GiftOperations(commands.Cog):
                 }
 
                 captcha_img_base64 = await self.fetch_captcha_code(session, player_id)
-                print(f"Captcha image base64: {captcha_img_base64}")
-
                 captcha_solution = await CaptchaSolver.solve_captcha_from_base64(captcha_img_base64)
                         
-                # Add captcha solution to the request
-                if captcha_solution:
-                    data_to_encode["captcha"] = captcha_solution
-                    await self.write_to_file(
-                        log_file_path,
-                        f"CAPTCHA DETECTED - Solution: {captcha_solution}\n"
-                    )
+                data_to_encode["captcha"] = captcha_solution
+                await self.write_to_file(
+                    log_file_path,
+                    f"CAPTCHA DETECTED - Solution: {captcha_solution}\n"
+                )
                 
                 data = self.encode_data(data_to_encode)
                 
