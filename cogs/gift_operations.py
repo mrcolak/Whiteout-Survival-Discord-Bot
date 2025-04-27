@@ -339,6 +339,8 @@ class GiftOperations(commands.Cog):
                 }
 
                 captcha_img_base64 = await self.fetch_captcha_code(session, player_id)
+                print(f"Captcha image base64: {captcha_img_base64}")
+                
                 captcha_solution = await CaptchaSolver.solve_captcha_from_base64(captcha_img_base64)
                         
                 # Add captcha solution to the request
