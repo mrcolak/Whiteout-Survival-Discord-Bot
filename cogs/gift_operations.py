@@ -265,7 +265,7 @@ class GiftOperations(commands.Cog):
                 "init": "0"
             })
 
-            response = await self.run_in_thread(make_request, session, self.wos_captcha_url, data)
+            response = await self.run_in_thread(self.make_request, session, self.wos_captcha_url, data)
             
             if response and response.status_code == 200:
                 try:
@@ -392,7 +392,7 @@ class GiftOperations(commands.Cog):
                             data = self.encode_data(data_to_encode)
                             
                             # Try the request again
-                            response_giftcode = await self.run_in_thread(make_request, session, self.wos_giftcode_url, data)
+                            response_giftcode = await self.run_in_thread(self.make_request, session, self.wos_giftcode_url, data)
                             response_json = response_giftcode.json()
                             
                             await self.write_to_file(
