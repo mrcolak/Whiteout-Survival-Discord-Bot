@@ -109,6 +109,13 @@ class GiftOperations(commands.Cog):
         session = requests.Session()
         session.mount("https://", HTTPAdapter(max_retries=self.retry_config))
 
+        if proxy:
+            session.proxies = {"http": proxy, "https": proxy}
+        elif self.proxies:
+            # Use a random proxy if available
+            proxy = random.choice(self.proxies)
+            session.proxies = {"http": proxy, "https": proxy}
+
         headers = {
             "accept": "application/json, text/plain, */*",
             "content-type": "application/x-www-form-urlencoded",
@@ -128,36 +135,13 @@ class GiftOperations(commands.Cog):
         )
         return session, response_stove_info
         
-    def get_stove_info_and_make_request_wos(self, player_id, giftcode):
-        # Get stove info using the proxy
-        session, response_stove_info = self.get_stove_info_wos(player_id=player_id)
-        
-        # Make the request using the same session
-        data_to_encode = {
-            "fid": f"{player_id}",
-            "cdk": giftcode,
-            "time": f"{int(datetime.now().timestamp())}",
-        }
-        data = self.encode_data(data_to_encode)
-        
-        response_giftcode = session.post(
-            self.wos_giftcode_url,
-            data=data,
-        )
-
-        print(f"Making request with data: {data}")
-        print(f"Session: {session}")
-        print(f"URL: {self.wos_giftcode_url}")
-        print(f"Stove: {response_stove_info.json()}")
-        print(f"Gift code: {response_giftcode.json()}")
-        
-        return response_stove_info, response_giftcode
-
     # Execute database operations in a separate thread to avoid blocking the event loop
-    async def run_in_thread(self, func, *args):
+    async def run_in_thread(self, func, *args, **kwargs):
+        # Create a partial function that includes keyword arguments
+        wrapped_func = functools.partial(func, *args, **kwargs)
         # Run the partial function in the executor
         return await asyncio.get_event_loop().run_in_executor(
-            self.thread_executor, func, *args
+            self.thread_executor, wrapped_func
         )
         
     # Async wrapper for database operations
@@ -200,9 +184,8 @@ class GiftOperations(commands.Cog):
                     return result[0][0]
 
             # This is a network operation, so it's ok to run in a thread
-            # session_info = await self.run_in_thread(self.get_stove_info_and_make_request_wos, player_id, giftcode)
-            session_info = self.get_stove_info_and_make_request_wos(player_id, giftcode)
-            response_stove_info, response_giftcode = session_info
+            session_info = await self.run_in_thread(self.get_stove_info_wos, player_id=player_id)
+            session, response_stove_info = session_info
             
             await self.write_to_file(
                 log_file_path,
@@ -213,7 +196,23 @@ class GiftOperations(commands.Cog):
             )
             
             if response_stove_info.json().get("msg") == "success":
+                data_to_encode = {
+                    "fid": f"{player_id}",
+                    "cdk": giftcode,
+                    "time": f"{int(datetime.now().timestamp())}",
+                }
+                data = self.encode_data(data_to_encode)
+
                 # Run API request in thread to not block event loop
+                async def make_request():
+                    return session.post(
+                        self.wos_giftcode_url,
+                        data=data,
+                    )
+                response_giftcode = await self.run_in_thread(lambda: session.post(
+                    self.wos_giftcode_url, data=data
+                ))
+                
                 response_json = response_giftcode.json()
                 
                 await self.write_to_file(
