@@ -13,6 +13,11 @@ import asyncio
 import re
 import functools
 
+import base64
+import easyocr
+import cv2
+import numpy as np
+
 from urllib3 import Retry
 from .alliance_member_operations import AllianceSelectView
 from .alliance import PaginatedChannelView
@@ -61,6 +66,7 @@ class GiftOperations(commands.Cog):
         
         self.wos_player_info_url = "https://wos-giftcode-api.centurygame.com/api/player"
         self.wos_giftcode_url = "https://wos-giftcode-api.centurygame.com/api/gift_code"
+        self.wos_captcha_url = "https://wos-giftcode-api.centurygame.com/api/captcha"
         self.wos_giftcode_redemption_url = "https://wos-giftcode.centurygame.com"
         self.wos_encrypt_key = "tB87#kPtkxqOS2"
         
@@ -71,6 +77,8 @@ class GiftOperations(commands.Cog):
             status_forcelist=[429],
             allowed_methods=["POST"]
         )
+
+        self.captcha_reader = easyocr.Reader(['en'], gpu=False)
 
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS giftcodecontrol (
@@ -165,6 +173,54 @@ class GiftOperations(commands.Cog):
                 f.write(content)
         await asyncio.get_event_loop().run_in_executor(self.thread_executor, _write)
 
+    def fetch_captcha_code(self, player_id):
+        attempts = 0
+        while attempts < 10:
+            data = self.encode_data({
+                "fid": player_id, 
+                "time": f"{int(datetime.now().timestamp())}", 
+                "init": "0"
+            })
+            response = self.make_request(self.wos_captcha_url, data)
+            if response and response.status_code == 200:
+                try:
+                    captcha_data = response.json()
+                    if captcha_data.get("code") == 1 and captcha_data.get("msg") == "CAPTCHA GET TOO FREQUENT.":
+                        print("Captcha fetch too frequent, sleeping before retry...")
+                        asyncio.sleep(0.1)
+                        continue
+
+                    if "data" in captcha_data and "img" in captcha_data["data"]:
+                        img_field = captcha_data["data"]["img"]
+                        if img_field.startswith("data:image"):
+                            img_base64 = img_field.split(",", 1)[1]
+                        else:
+                            img_base64 = captcha_data["data"]["img"]
+                        img_bytes = base64.b64decode(img_base64)
+
+                        nparr = np.frombuffer(img_bytes, np.uint8)
+                        img_np = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+                        result = self.captcha_reader.readtext(img_bytes, detail=0)
+                        captcha_code = result[0].strip().replace(' ', '') if result else 'EMPTY'
+
+                        if captcha_code.isalnum() and len(captcha_code) == 4:
+                            print(f"Recognized captcha: {captcha_code}")
+                            return captcha_code
+                        else:
+                            print(f"Invalid captcha format: '{captcha_code}', refetching...")
+                    else:
+                        print("Captcha image missing in response, refetching...")
+                except Exception as e:
+                    print(f"Error solving captcha: {str(e)}")
+            else:
+                print("Failed to fetch captcha, retrying...")
+
+            attempts += 1
+            asyncio.sleep(random.uniform(2.0, 5.0))
+
+        raise Exception("Failed to fetch valid captcha after multiple attempts")
+
     async def claim_giftcode_rewards_wos(self, player_id, giftcode):
         try:
             log_file_path = os.path.join(self.log_directory, 'giftlog.txt')
@@ -196,19 +252,16 @@ class GiftOperations(commands.Cog):
             )
             
             if response_stove_info.json().get("msg") == "success":
-                data_to_encode = {
+
+                captcha_code = await self.run_in_thread(self.fetch_captcha_code, player_id=player_id)
+
+                data = self.encode_data({
                     "fid": f"{player_id}",
                     "cdk": giftcode,
+                    "captcha_code": captcha_code,
                     "time": f"{int(datetime.now().timestamp())}",
-                }
-                data = self.encode_data(data_to_encode)
+                })
 
-                # Run API request in thread to not block event loop
-                async def make_request():
-                    return session.post(
-                        self.wos_giftcode_url,
-                        data=data,
-                    )
                 response_giftcode = await self.run_in_thread(lambda: session.post(
                     self.wos_giftcode_url, data=data
                 ))
