@@ -143,6 +143,22 @@ class GiftOperations(commands.Cog):
             self.wos_giftcode_url,
             data=data,
         )
+    
+    def get_stove_info_and_make_request_wos(self, player_id, giftcode):
+        # Get stove info using the proxy
+        session, response_stove_info = self.get_stove_info_wos(player_id)
+        
+        # Make the request using the same session
+        data_to_encode = {
+            "fid": f"{player_id}",
+            "cdk": giftcode,
+            "time": f"{int(datetime.now().timestamp())}",
+        }
+        data = self.encode_data(data_to_encode)
+        
+        response_giftcode = self.make_request(session, data)
+        
+        return response_stove_info, response_giftcode
 
     # Execute database operations in a separate thread to avoid blocking the event loop
     async def run_in_thread(self, func, *args):
@@ -191,8 +207,8 @@ class GiftOperations(commands.Cog):
                     return result[0][0]
 
             # This is a network operation, so it's ok to run in a thread
-            session_info = await self.run_in_thread(self.get_stove_info_wos, player_id)
-            session, response_stove_info = session_info
+            session_info = await self.run_in_thread(self.get_stove_info_and_make_request_wos, player_id, giftcode)
+            response_stove_info, response_giftcode = session_info
             
             await self.write_to_file(
                 log_file_path,
@@ -203,15 +219,7 @@ class GiftOperations(commands.Cog):
             )
             
             if response_stove_info.json().get("msg") == "success":
-                data_to_encode = {
-                    "fid": f"{player_id}",
-                    "cdk": giftcode,
-                    "time": f"{int(datetime.now().timestamp())}",
-                }
-                data = self.encode_data(data_to_encode)
-
                 # Run API request in thread to not block event loop
-                response_giftcode = await self.run_in_thread(self.make_request, session, data)
                 response_json = response_giftcode.json()
                 
                 await self.write_to_file(
