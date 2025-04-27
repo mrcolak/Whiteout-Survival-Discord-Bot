@@ -16,7 +16,10 @@ def check_and_install_requirements():
         'pytz': 'pytz',
         'aiosqlite': 'aiosqlite',
         'pyzipper': 'pyzipper',
-        'selenium': 'selenium'
+        'selenium': 'selenium',
+        'easyocr': 'easyocr',
+        'cv2': 'opencv-python',
+        'numpy': 'numpy',
     }
     
     def install_package(package_name):
