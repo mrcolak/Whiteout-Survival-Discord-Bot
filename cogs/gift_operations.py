@@ -139,6 +139,7 @@ class GiftOperations(commands.Cog):
     def make_request(self, session, data):
         print(f"Making request with data: {data}")
         print(f"Session: {session}")
+        print(f"URL: {self.wos_giftcode_url}")
         return session.post(
             self.wos_giftcode_url,
             data=data,
