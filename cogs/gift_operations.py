@@ -332,20 +332,20 @@ class GiftOperations(commands.Cog):
             
             if response_stove_info.json().get("msg") == "success":
                 
-                data_to_encode = {
-                    "fid": f"{player_id}",
-                    "cdk": giftcode,
-                    "time": f"{int(datetime.now().timestamp())}",
-                }
-
                 captcha_img_base64 = await self.fetch_captcha_code(session, player_id)
                 captcha_solution = await CaptchaSolver.solve_captcha_from_base64(captcha_img_base64)
                         
-                data_to_encode["captcha"] = captcha_solution
                 await self.write_to_file(
                     log_file_path,
                     f"CAPTCHA DETECTED - Solution: {captcha_solution}\n"
                 )
+
+                data_to_encode = {
+                    "fid": f"{player_id}",
+                    "cdk": giftcode,
+                    "captcha_code": captcha_solution,
+                    "time": f"{int(datetime.now().timestamp())}",
+                }
                 
                 data = self.encode_data(data_to_encode)
                 
