@@ -167,8 +167,6 @@ class GiftOperations(commands.Cog):
             allowed_methods=["POST"]
         )
 
-        self.captcha_reader = easyocr.Reader(['en'], gpu=False)
-
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS giftcodecontrol (
                 alliance_id INTEGER PRIMARY KEY,
