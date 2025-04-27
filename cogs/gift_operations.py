@@ -135,6 +135,13 @@ class GiftOperations(commands.Cog):
         )
         return session, response_stove_info
         
+
+    def make_request(self, session, data):
+        return session.post(
+            self.wos_giftcode_url,
+            data=data,
+        )
+
     # Execute database operations in a separate thread to avoid blocking the event loop
     async def run_in_thread(self, func, *args, **kwargs):
         # Create a partial function that includes keyword arguments
@@ -184,9 +191,11 @@ class GiftOperations(commands.Cog):
                     return result[0][0]
 
             # This is a network operation, so it's ok to run in a thread
-            session_info = await self.run_in_thread(self.get_stove_info_wos, player_id=player_id)
+            session_info = await self.run_in_thread(self.get_stove_info_wos, player_id)
             session, response_stove_info = session_info
             
+            print(session)
+
             await self.write_to_file(
                 log_file_path,
                 f"\nAPI REQUEST - Player Info\n"
@@ -204,15 +213,7 @@ class GiftOperations(commands.Cog):
                 data = self.encode_data(data_to_encode)
 
                 # Run API request in thread to not block event loop
-                async def make_request():
-                    return session.post(
-                        self.wos_giftcode_url,
-                        data=data,
-                    )
-                response_giftcode = await self.run_in_thread(lambda: session.post(
-                    self.wos_giftcode_url, data=data
-                ))
-                
+                response_giftcode = await self.run_in_thread(self.make_request, session, data)
                 response_json = response_giftcode.json()
                 
                 await self.write_to_file(
