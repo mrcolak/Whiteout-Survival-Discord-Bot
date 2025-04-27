@@ -239,7 +239,7 @@ class GiftOperations(commands.Cog):
             self.thread_executor, wrapped_func
         )
             
-    def make_request(session, url, data):
+    def make_request(self, session, url, data):
         return session.post(url, data=data)
         
     # Async wrapper for database operations
