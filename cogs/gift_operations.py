@@ -338,9 +338,8 @@ class GiftOperations(commands.Cog):
                     "time": f"{int(datetime.now().timestamp())}",
                 }
 
-                captcha_data = await self.fetch_captcha_code(session, player_id)
-
-                captcha_solution = await CaptchaSolver.solve_captcha_from_base64(captcha_data["image"])
+                captcha_img_base64 = await self.fetch_captcha_code(session, player_id)
+                captcha_solution = await CaptchaSolver.solve_captcha_from_base64(captcha_img_base64)
                         
                 # Add captcha solution to the request
                 if captcha_solution:
