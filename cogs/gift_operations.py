@@ -109,6 +109,13 @@ class GiftOperations(commands.Cog):
         session = requests.Session()
         session.mount("https://", HTTPAdapter(max_retries=self.retry_config))
 
+        if proxy:
+            session.proxies = {"http": proxy, "https": proxy}
+        elif self.proxies:
+            # Use a random proxy if available
+            proxy = random.choice(self.proxies)
+            session.proxies = {"http": proxy, "https": proxy}
+
         headers = {
             "accept": "application/json, text/plain, */*",
             "content-type": "application/x-www-form-urlencoded",
@@ -200,7 +207,7 @@ class GiftOperations(commands.Cog):
                     return result[0][0]
 
             # This is a network operation, so it's ok to run in a thread
-            session_info = await self.run_in_thread(self.get_stove_info_and_make_request_wos, player_id, giftcode)
+            session_info = self.get_stove_info_and_make_request_wos(player_id, giftcode)
             response_stove_info, response_giftcode = session_info
             
             await self.write_to_file(
