@@ -135,16 +135,6 @@ class GiftOperations(commands.Cog):
         )
         return session, response_stove_info
         
-
-    def make_request(self, session, data):
-        print(f"Making request with data: {data}")
-        print(f"Session: {session}")
-        print(f"URL: {self.wos_giftcode_url}")
-        return session.post(
-            self.wos_giftcode_url,
-            data=data,
-        )
-    
     def get_stove_info_and_make_request_wos(self, player_id, giftcode):
         # Get stove info using the proxy
         session, response_stove_info = self.get_stove_info_wos(player_id)
@@ -157,7 +147,16 @@ class GiftOperations(commands.Cog):
         }
         data = self.encode_data(data_to_encode)
         
-        response_giftcode = self.make_request(session, data)
+        response_giftcode = session.post(
+            self.wos_giftcode_url,
+            data=data,
+        )
+
+        print(f"Making request with data: {data}")
+        print(f"Session: {session}")
+        print(f"URL: {self.wos_giftcode_url}")
+        print(f"Stove: {response_stove_info.json()}")
+        print(f"Gift code: {response_giftcode.json()}")
         
         return response_stove_info, response_giftcode
 
