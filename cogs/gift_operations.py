@@ -251,7 +251,47 @@ class GiftOperations(commands.Cog):
                 await db.commit()
             await cursor.close()
             return result
+
+    async def fetch_captcha_code(self, session, player_id):
+        attempts = 0
+        while attempts < 10:
             
+            def make_request(session, url, data):
+                return session.post(url, data=data)
+            
+            data = self.encode_data({
+                "fid": player_id, 
+                "time": f"{int(datetime.now().timestamp())}", 
+                "init": "0"
+            })
+
+            response = await self.run_in_thread(make_request, session, self.wos_captcha_url, data)
+            
+            if response and response.status_code == 200:
+                try:
+                    captcha_data = response.json()
+                    if captcha_data.get("code") == 1 and captcha_data.get("msg") == "CAPTCHA GET TOO FREQUENT.":
+                        print("Captcha fetch too frequent, sleeping before retry...")
+                        continue
+
+                    if "data" in captcha_data and "img" in captcha_data["data"]:
+                        img_field = captcha_data["data"]["img"]
+                        if img_field.startswith("data:image"):
+                            img_base64 = img_field.split(",", 1)[1]
+                        else:
+                            img_base64 = captcha_data["data"]["img"]
+                        
+                        return img_base64
+                    else:
+                        print("Captcha image missing in response, refetching...")
+                except Exception as e:
+                    print(f"Error getting captcha: {str(e)}")
+            else:
+                print("Failed to fetch captcha, retrying...")
+
+            attempts += 1
+            asyncio.sleep(5)
+
     # Async file writing
     async def write_to_file(self, file_path, content, mode='a'):
         def _write():
@@ -291,35 +331,29 @@ class GiftOperations(commands.Cog):
             )
             
             if response_stove_info.json().get("msg") == "success":
+                
                 data_to_encode = {
                     "fid": f"{player_id}",
                     "cdk": giftcode,
                     "time": f"{int(datetime.now().timestamp())}",
                 }
-                
-                # Check if the response contains a captcha challenge
-                if "captcha" in response_stove_info.json():
-                    captcha_data = response_stove_info.json()["captcha"]
-                    if captcha_data and "image" in captcha_data:
-                        # Solve the captcha
-                        captcha_solution = await CaptchaSolver.solve_captcha_from_base64(captcha_data["image"])
+
+                captcha_data = await self.fetch_captcha_code(session, player_id)
+
+                captcha_solution = await CaptchaSolver.solve_captcha_from_base64(captcha_data["image"])
                         
-                        # Add captcha solution to the request
-                        if captcha_solution:
-                            data_to_encode["captcha"] = captcha_solution
-                            await self.write_to_file(
-                                log_file_path,
-                                f"CAPTCHA DETECTED - Solution: {captcha_solution}\n"
-                            )
+                # Add captcha solution to the request
+                if captcha_solution:
+                    data_to_encode["captcha"] = captcha_solution
+                    await self.write_to_file(
+                        log_file_path,
+                        f"CAPTCHA DETECTED - Solution: {captcha_solution}\n"
+                    )
                 
                 data = self.encode_data(data_to_encode)
-
-                # Define a function that captures session properly
-                def make_request(session, url, data):
-                    return session.post(url, data=data)
                 
                 # Run API request in thread to not block event loop with proper session handling
-                response_giftcode = await self.run_in_thread(make_request, session, self.wos_giftcode_url, data)
+                response_giftcode = await self.run_in_thread(self.make_request, session, self.wos_giftcode_url, data)
                 
                 response_json = response_giftcode.json()
                 
