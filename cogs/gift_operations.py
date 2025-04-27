@@ -137,6 +137,8 @@ class GiftOperations(commands.Cog):
         
 
     def make_request(self, session, data):
+        print(f"Making request with data: {data}")
+        print(f"Session: {session}")
         return session.post(
             self.wos_giftcode_url,
             data=data,
@@ -194,8 +196,6 @@ class GiftOperations(commands.Cog):
             session_info = await self.run_in_thread(self.get_stove_info_wos, player_id)
             session, response_stove_info = session_info
             
-            print(session)
-
             await self.write_to_file(
                 log_file_path,
                 f"\nAPI REQUEST - Player Info\n"
