@@ -17,11 +17,9 @@ def check_and_install_requirements():
         'aiosqlite': 'aiosqlite',
         'pyzipper': 'pyzipper',
         'selenium': 'selenium',
-        'requests': 'requests',
-        'easyocr': 'easyocr',
-        'opencv-python': 'opencv-python',
-        'numpy': 'numpy',
-        'torch': 'torch',
+        'pillow': 'pillow',
+        'pytesseract': 'pytesseract',
+        'opencv-python': 'opencv-python'
     }
     
     def install_package(package_name):

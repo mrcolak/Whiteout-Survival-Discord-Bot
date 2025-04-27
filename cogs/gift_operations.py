@@ -12,11 +12,12 @@ from discord.ext import tasks
 import asyncio
 import re
 import functools
-
 import base64
-import easyocr
+import io
 import cv2
 import numpy as np
+from PIL import Image
+import pytesseract
 
 from urllib3 import Retry
 from .alliance_member_operations import AllianceSelectView
@@ -26,6 +27,94 @@ import traceback
 from .gift_operationsapi import GiftCodeAPI
 from colorama import Fore, Style
 import random
+
+class CaptchaSolver:
+    @staticmethod
+    def preprocess_image(image):
+        """
+        Preprocess the image to make it more readable for OCR
+        """
+        # Convert to grayscale
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        
+        # Apply threshold to get black and white image
+        thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+        
+        # Remove noise
+        kernel = np.ones((1, 1), np.uint8)
+        opening = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+        
+        return opening
+    
+    @staticmethod
+    async def solve_captcha_from_base64(base64_string, custom_config=None):
+        """
+        Solve a captcha from a base64 encoded image string
+        
+        Args:
+            base64_string (str): Base64 encoded image string
+            custom_config (str, optional): Custom configuration for tesseract
+            
+        Returns:
+            str: Recognized text from the captcha
+        """
+        try:
+            # Ensure tesseract path is set (modify this based on your installation)
+            # pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+            
+            if not custom_config:
+                # Configuration optimized for captchas with letters and numbers
+                custom_config = r'--oem 3 --psm 8 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+            
+            # Convert base64 to image
+            image_data = base64.b64decode(base64_string)
+            image = Image.open(io.BytesIO(image_data))
+            
+            # Convert PIL image to OpenCV format
+            opencv_image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+            
+            # Preprocess image
+            processed_image = CaptchaSolver.preprocess_image(opencv_image)
+            
+            # Run in executor to not block the event loop
+            def recognize_text():
+                return pytesseract.image_to_string(
+                    processed_image, 
+                    config=custom_config
+                ).strip()
+            
+            # Run OCR in a thread
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, recognize_text)
+            
+            # Clean result
+            result = ''.join(c for c in result if c.isalnum())
+            
+            return result
+        
+        except Exception as e:
+            print(f"Error solving captcha: {str(e)}")
+            traceback.print_exc()
+            return ""
+            
+    @staticmethod
+    async def save_debug_image(base64_string, filename="debug_captcha.png"):
+        """Save captcha image for debugging purposes"""
+        try:
+            image_data = base64.b64decode(base64_string)
+            with open(filename, "wb") as f:
+                f.write(image_data)
+                
+            # Also save the processed version
+            image = Image.open(io.BytesIO(image_data))
+            opencv_image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+            processed = CaptchaSolver.preprocess_image(opencv_image)
+            cv2.imwrite(f"processed_{filename}", processed)
+            
+            return True
+        except Exception as e:
+            print(f"Error saving debug image: {str(e)}")
+            return False
 
 class GiftOperations(commands.Cog):
     def __init__(self, bot):
@@ -173,54 +262,6 @@ class GiftOperations(commands.Cog):
                 f.write(content)
         await asyncio.get_event_loop().run_in_executor(self.thread_executor, _write)
 
-    def fetch_captcha_code(self, player_id):
-        attempts = 0
-        while attempts < 10:
-            data = self.encode_data({
-                "fid": player_id, 
-                "time": f"{int(datetime.now().timestamp())}", 
-                "init": "0"
-            })
-            response = self.make_request(self.wos_captcha_url, data)
-            if response and response.status_code == 200:
-                try:
-                    captcha_data = response.json()
-                    if captcha_data.get("code") == 1 and captcha_data.get("msg") == "CAPTCHA GET TOO FREQUENT.":
-                        print("Captcha fetch too frequent, sleeping before retry...")
-                        asyncio.sleep(0.1)
-                        continue
-
-                    if "data" in captcha_data and "img" in captcha_data["data"]:
-                        img_field = captcha_data["data"]["img"]
-                        if img_field.startswith("data:image"):
-                            img_base64 = img_field.split(",", 1)[1]
-                        else:
-                            img_base64 = captcha_data["data"]["img"]
-                        img_bytes = base64.b64decode(img_base64)
-
-                        nparr = np.frombuffer(img_bytes, np.uint8)
-                        img_np = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-                        result = self.captcha_reader.readtext(img_bytes, detail=0)
-                        captcha_code = result[0].strip().replace(' ', '') if result else 'EMPTY'
-
-                        if captcha_code.isalnum() and len(captcha_code) == 4:
-                            print(f"Recognized captcha: {captcha_code}")
-                            return captcha_code
-                        else:
-                            print(f"Invalid captcha format: '{captcha_code}', refetching...")
-                    else:
-                        print("Captcha image missing in response, refetching...")
-                except Exception as e:
-                    print(f"Error solving captcha: {str(e)}")
-            else:
-                print("Failed to fetch captcha, retrying...")
-
-            attempts += 1
-            asyncio.sleep(random.uniform(2.0, 5.0))
-
-        raise Exception("Failed to fetch valid captcha after multiple attempts")
-
     async def claim_giftcode_rewards_wos(self, player_id, giftcode):
         try:
             log_file_path = os.path.join(self.log_directory, 'giftlog.txt')
@@ -240,7 +281,7 @@ class GiftOperations(commands.Cog):
                     return result[0][0]
 
             # This is a network operation, so it's ok to run in a thread
-            session_info = await self.run_in_thread(self.get_stove_info_wos, player_id=player_id)
+            session_info = await self.run_in_thread(self.get_stove_info_wos, player_id)
             session, response_stove_info = session_info
             
             await self.write_to_file(
@@ -252,19 +293,35 @@ class GiftOperations(commands.Cog):
             )
             
             if response_stove_info.json().get("msg") == "success":
-
-                captcha_code = await self.run_in_thread(self.fetch_captcha_code, player_id=player_id)
-
-                data = self.encode_data({
+                data_to_encode = {
                     "fid": f"{player_id}",
                     "cdk": giftcode,
-                    "captcha_code": captcha_code,
                     "time": f"{int(datetime.now().timestamp())}",
-                })
+                }
+                
+                # Check if the response contains a captcha challenge
+                if "captcha" in response_stove_info.json():
+                    captcha_data = response_stove_info.json()["captcha"]
+                    if captcha_data and "image" in captcha_data:
+                        # Solve the captcha
+                        captcha_solution = await CaptchaSolver.solve_captcha_from_base64(captcha_data["image"])
+                        
+                        # Add captcha solution to the request
+                        if captcha_solution:
+                            data_to_encode["captcha"] = captcha_solution
+                            await self.write_to_file(
+                                log_file_path,
+                                f"CAPTCHA DETECTED - Solution: {captcha_solution}\n"
+                            )
+                
+                data = self.encode_data(data_to_encode)
 
-                response_giftcode = await self.run_in_thread(lambda: session.post(
-                    self.wos_giftcode_url, data=data
-                ))
+                # Define a function that captures session properly
+                def make_request(session, url, data):
+                    return session.post(url, data=data)
+                
+                # Run API request in thread to not block event loop with proper session handling
+                response_giftcode = await self.run_in_thread(make_request, session, self.wos_giftcode_url, data)
                 
                 response_json = response_giftcode.json()
                 
@@ -276,6 +333,41 @@ class GiftOperations(commands.Cog):
                     f"Response: {json.dumps(response_json, indent=2)}\n"
                     f"{'-' * 50}\n"
                 )
+                
+                # Check if we got a captcha error and try again
+                if response_json.get("msg") == "CAPTCHA ERROR." and response_json.get("err_code") == 40013:
+                    if "captcha" in response_json and response_json["captcha"] and "image" in response_json["captcha"]:
+                        # Try with a different preprocessing approach
+                        await self.write_to_file(
+                            log_file_path,
+                            f"CAPTCHA ERROR - Retrying with different processing\n"
+                        )
+                        
+                        # Debug: Save the captcha for analysis
+                        debug_path = os.path.join(self.log_directory, f'captcha_{player_id}_{int(datetime.now().timestamp())}.png')
+                        await CaptchaSolver.save_debug_image(response_json["captcha"]["image"], debug_path)
+                        
+                        # Try with a different config
+                        captcha_solution = await CaptchaSolver.solve_captcha_from_base64(
+                            response_json["captcha"]["image"],
+                            r'--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+                        )
+                        
+                        if captcha_solution:
+                            # Update data with new captcha solution
+                            data_to_encode["captcha"] = captcha_solution
+                            data = self.encode_data(data_to_encode)
+                            
+                            # Try the request again
+                            response_giftcode = await self.run_in_thread(make_request, session, self.wos_giftcode_url, data)
+                            response_json = response_giftcode.json()
+                            
+                            await self.write_to_file(
+                                log_file_path,
+                                f"CAPTCHA RETRY - Solution: {captcha_solution}\n"
+                                f"Response: {json.dumps(response_json, indent=2)}\n"
+                                f"{'-' * 50}\n"
+                            )
                 
                 if response_json.get("msg") == "TIME ERROR." and response_json.get("err_code") == 40007:
                     status = "TIME_ERROR"
@@ -291,6 +383,8 @@ class GiftOperations(commands.Cog):
                     status = "TIMEOUT_RETRY"
                 elif response_json.get("msg") == "USED." and response_json.get("err_code") == 40005:
                     status = "USAGE_LIMIT"
+                elif response_json.get("msg") == "CAPTCHA ERROR." and response_json.get("err_code") == 40013:
+                    status = "CAPTCHA_ERROR"
                 else:
                     status = "ERROR"
 
@@ -592,7 +686,7 @@ class GiftOperations(commands.Cog):
                                     successful_users.append(nickname)
                                     try:
                                         await self.execute_db_query(
-                                            "INSERT OR REPLACE INTO user_giftcodes (fid, giftcode, status) VALUES (?, ?, ?)",
+                                            "INSERT INTO user_giftcodes (fid, giftcode, status) VALUES (?, ?, ?)",
                                             (player_id, giftcode, status), commit=True
                                         )
                                     except Exception as e:
@@ -606,7 +700,7 @@ class GiftOperations(commands.Cog):
                                     already_used_users.append(nickname)
                                     try:
                                         await self.execute_db_query(
-                                            "INSERT OR REPLACE INTO user_giftcodes (fid, giftcode, status) VALUES (?, ?, ?)",
+                                            "INSERT INTO user_giftcodes (fid, giftcode, status) VALUES (?, ?, ?)",
                                             (player_id, giftcode, status), commit=True
                                         )
                                     except Exception as e:
@@ -1718,90 +1812,63 @@ class GiftOperations(commands.Cog):
             try:
                 alliance_id = int(view.current_select.values[0])
                 
-                self.cursor.execute("SELECT channel_id FROM giftcode_channel WHERE alliance_id = ?", (alliance_id,))
-                channel_id = self.cursor.fetchone()[0]
-                
-                alliance_name = next((name for aid, name in available_alliances if aid == alliance_id), "Unknown Alliance")
-                
-                confirm_embed = discord.Embed(
-                    title="⚠️ Confirm Removal",
+                channel_embed = discord.Embed(
+                    title="🗑️ Remove Gift Code Channel",
                     description=(
-                        f"Are you sure you want to remove the gift code channel for:\n\n"
-                        f"🏰 **Alliance:** {alliance_name}\n"
-                        f"📝 **Channel:** <#{channel_id}>\n\n"
-                        "This action cannot be undone!"
+                        "**Instructions:**\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        "Please confirm to remove the gift code channel for this alliance\n\n"
+                        "**Page:** 1/1\n"
+                        f"**Total Channels:** {len(select_interaction.guild.text_channels)}"
                     ),
-                    color=discord.Color.yellow()
+                    color=discord.Color.red()
                 )
 
-                confirm_view = discord.ui.View()
-                
-                async def confirm_callback(button_interaction: discord.Interaction):
+                async def channel_select_callback(channel_interaction: discord.Interaction):
                     try:
-                        self.cursor.execute("DELETE FROM giftcode_channel WHERE alliance_id = ?", (alliance_id,))
+                        channel_id = int(channel_interaction.data["values"][0])
+                        
+                        self.cursor.execute("""
+                            DELETE FROM giftcode_channel WHERE alliance_id = ?
+                        """, (alliance_id,))
                         self.conn.commit()
+
+                        alliance_name = next((name for aid, name in available_alliances if aid == alliance_id), "Unknown Alliance")
 
                         success_embed = discord.Embed(
                             title="✅ Gift Code Channel Removed",
                             description=(
                                 f"Successfully removed gift code channel for:\n\n"
                                 f"🏰 **Alliance:** {alliance_name}\n"
-                                f"📝 **Channel:** <#{channel_id}>"
+                                f"📝 **Channel:** <#{channel_id}>\n"
                             ),
                             color=discord.Color.green()
                         )
 
-                        await button_interaction.response.edit_message(
+                        await channel_interaction.response.edit_message(
                             embed=success_embed,
                             view=None
                         )
 
                     except Exception as e:
                         print(f"Error removing gift code channel: {e}")
-                        await button_interaction.response.send_message(
+                        await channel_interaction.response.send_message(
                             "❌ An error occurred while removing the gift code channel.",
                             ephemeral=True
                         )
 
-                async def cancel_callback(button_interaction: discord.Interaction):
-                    cancel_embed = discord.Embed(
-                        title="❌ Removal Cancelled",
-                        description="The gift code channel removal has been cancelled.",
-                        color=discord.Color.red()
-                    )
-                    await button_interaction.response.edit_message(
-                        embed=cancel_embed,
-                        view=None
-                    )
-
-                confirm_button = discord.ui.Button(
-                    label="Confirm",
-                    emoji="✅",
-                    style=discord.ButtonStyle.danger,
-                    custom_id="confirm_remove"
-                )
-                confirm_button.callback = confirm_callback
-
-                cancel_button = discord.ui.Button(
-                    label="Cancel",
-                    emoji="❌",
-                    style=discord.ButtonStyle.secondary,
-                    custom_id="cancel_remove"
-                )
-                cancel_button.callback = cancel_callback
-
-                confirm_view.add_item(confirm_button)
-                confirm_view.add_item(cancel_button)
+                channels = select_interaction.guild.text_channels
+                channel_view = PaginatedChannelView(channels, channel_select_callback)
 
                 if not select_interaction.response.is_done():
                     await select_interaction.response.edit_message(
-                        embed=confirm_embed,
-                        view=confirm_view
+                        embed=channel_embed,
+                        view=channel_view
                     )
                 else:
                     await select_interaction.message.edit(
-                        embed=confirm_embed,
-                        view=confirm_view
+                        embed=channel_embed,
+                        view=channel_view
                     )
 
             except Exception as e:
@@ -2391,7 +2458,7 @@ class GiftView(discord.ui.View):
                                     f"**Details**\n"
                                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
                                     f"🎁 **Gift Code:** `{selected_code}`\n"
-                                    f"🏰 **Alliances:** {'ALL' if selected_value == 'all' else next((name for aid, name, _ in alliances_with_counts if aid == alliance_id), 'Unknown')}\n"
+                                    f"🏰 **Alliances:** {'ALL' if selected_value == 'all' else next((name for aid, name in available_alliances if aid == alliance_id), 'Unknown')}\n"
                                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
                                 ),
                                 color=discord.Color.yellow()
@@ -2422,7 +2489,7 @@ class GiftView(discord.ui.View):
                                     
                                     completed = 0
                                     for aid in all_alliances:
-                                        alliance_name = next((name for a_id, name, _ in alliances_with_counts if a_id == aid), 'Unknown')
+                                        alliance_name = next((name for a_id, name in alliances_with_counts if a_id == aid), 'Unknown')
                                         
                                         progress_embed.description = (
                                             f"**Overall Progress**\n"
@@ -2540,38 +2607,18 @@ class GiftView(discord.ui.View):
                             ephemeral=True
                         )
 
-            view.callback = alliance_callback
-
-            await interaction.response.send_message(
-                embed=alliance_embed,
-                view=view,
-                ephemeral=True
-            )
-
         except Exception as e:
             print(f"Error in use_gift_alliance_button: {str(e)}")
-            await interaction.response.send_message(
-                "❌ An error occurred while processing the request.",
-                ephemeral=True
-            )
+            traceback.print_exc()
+            return False
+        
+        view.callback = alliance_callback
 
-    @discord.ui.button(
-        label="Main Menu",
-        emoji="🏠",
-        style=discord.ButtonStyle.secondary,
-        custom_id="main_menu"
-    )
-    async def main_menu_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        try:
-            alliance_cog = self.cog.bot.get_cog("Alliance")
-            if alliance_cog:
-                try:
-                    await interaction.message.edit(content=None, embed=None, view=None)
-                except:
-                    pass
-                await alliance_cog.show_main_menu(interaction)
-        except:
-            pass
+        await interaction.response.send_message(
+            embed=alliance_embed,
+            view=view,
+            ephemeral=True
+        )
 
 async def setup(bot):
     await bot.add_cog(GiftOperations(bot))
