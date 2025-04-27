@@ -238,6 +238,9 @@ class GiftOperations(commands.Cog):
         return await asyncio.get_event_loop().run_in_executor(
             self.thread_executor, wrapped_func
         )
+            
+    def make_request(session, url, data):
+        return session.post(url, data=data)
         
     # Async wrapper for database operations
     async def execute_db_query(self, query, params=(), fetch=False, commit=False, db_path='db/giftcode.sqlite'):
@@ -255,9 +258,6 @@ class GiftOperations(commands.Cog):
     async def fetch_captcha_code(self, session, player_id):
         attempts = 0
         while attempts < 10:
-            
-            def make_request(session, url, data):
-                return session.post(url, data=data)
             
             data = self.encode_data({
                 "fid": player_id, 
@@ -340,7 +340,7 @@ class GiftOperations(commands.Cog):
 
                 captcha_img_base64 = await self.fetch_captcha_code(session, player_id)
                 print(f"Captcha image base64: {captcha_img_base64}")
-                
+
                 captcha_solution = await CaptchaSolver.solve_captcha_from_base64(captcha_img_base64)
                         
                 # Add captcha solution to the request
